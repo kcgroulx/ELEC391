@@ -9,7 +9,7 @@ If you want to implement a feature.
 ```console
 git checkout -b [your name]/[feature]
 Example
-git checkout - kyle/my_cool_feature
+git checkout -b kyle/my_cool_feature
 ```
 2. Commit directly to your new branch.
 ```console
