@@ -203,6 +203,10 @@ void SysTick_Handler(void)
 /**
   * @brief This function handles TIM4 global interrupt.
   */
+
+float target_angle = 180.0f;
+float actual_angle = 0.0f;
+
 void TIM4_IRQHandler(void)
 {
   /* USER CODE BEGIN TIM4_IRQn 0 */
@@ -210,11 +214,12 @@ void TIM4_IRQHandler(void)
   /* USER CODE END TIM4_IRQn 0 */
   HAL_TIM_IRQHandler(&htim4);
   /* USER CODE BEGIN TIM4_IRQn 1 */
-  encoder_update_position(&htim1);
 
-  float cmd = angle_pid_step(90.0f, 0.001f); // go to 90 degrees
+  motor_controller_encoderUpdatePosition();
 
-  motor_control_setMotorSpeed(cmd);
+  float pid_command = pid_stepAndGetCommand(target_angle, 0.001f);
+
+  motor_control_setMotorSpeed(pid_command);
 
   /* USER CODE END TIM4_IRQn 1 */
 }

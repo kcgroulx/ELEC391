@@ -1,8 +1,6 @@
-/*
- * motor_control.h
- *
- *  Created on: Feb 5, 2026
- *      Author: Kyle Groulx
+/**
+ * @file motor_control.h
+ * @brief Public interface for motor PWM control and encoder angle tracking.
  */
 
 #ifndef SRC_MOTOR_CONTROL_H_
@@ -19,21 +17,23 @@
 #define ENCODER_CPR_OUTPUT  (ENCODER_CPR_MOTOR * GEAR_RATIO)
 
 /* Typedefs */
-typedef struct HalfBridgePWM {
+typedef struct HalfBridgePWM_t {
     TIM_HandleTypeDef *htim;
     uint32_t Channel;
-} HalfBridgePWM;
+} HalfBridgePWM_t;
 
-typedef enum motorDirection {
-    FORWARD = 0,
-    REVERSE = 1,
-    OFF = 2
-} motorDirection;
+typedef struct motor_control_config_t {
+    TIM_HandleTypeDef *halfBridge1Htim;
+    TIM_HandleTypeDef *halfBridge2Htim;
+    TIM_HandleTypeDef *encoderHtim;
+    uint32_t halfBridge1Channel;
+    uint32_t halfBridge2Channel;
+} motor_control_config_t;
 
 /* Public Function Declarations */
-void motor_control_init(TIM_HandleTypeDef *htim1, uint32_t Channel1, TIM_HandleTypeDef *htim2, uint32_t Channel2);
+void motor_control_init(motor_control_config_t* config);
 void motor_control_setMotorSpeed(float speed);
-void encoder_update_position(TIM_HandleTypeDef *htim);
-
+void motor_controller_encoderUpdatePosition(void);
+float motor_controller_encoderGetAngleDeg(void);
 
 #endif /* SRC_MOTOR_CONTROL_H_ */

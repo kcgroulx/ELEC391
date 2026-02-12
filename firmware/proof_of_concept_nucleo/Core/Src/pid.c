@@ -1,76 +1,121 @@
-#include <stdint.h>
+/**
+ * @file pid.c
+ * @brief PID control utilities for closed-loop motor angle control.
+ *
+ * Provides PID state update and a helper that generates a motor command from
+ * encoder angle feedback and a target angle.
+ */
 
+/* Includes */
+#include <stdint.h>
+#include "pid.h"
 #include "motor_control.h"
 
-typedef struct {
-    float kp, ki, kd;
-    float integrator;
-    float prev_error;
-    float out_min, out_max;   // e.g. -1..+1
-} PID_t;
+static pid_config_t pid_config;
+static const float PID_DT_MIN_S = 1.0e-6f;
+static const float PID_DEADBAND_INTEGRATOR_LEAK = 0.999f;
 
-static inline float clampf(float x, float lo, float hi)
+/* Private Functions */
+static inline float pid_clampf(float x, float lo, float hi)
 {
     if (x < lo) return lo;
     if (x > hi) return hi;
     return x;
 }
 
-float pid_update(PID_t *pid, float setpoint, float measurement, float dt)
+static float pid_wrapAngleErrorDeg(float error_deg)
 {
-    float error = setpoint - measurement;
+    while (error_deg > 180.0f)
+    {
+        error_deg -= 360.0f;
+    }
+    while (error_deg < -180.0f)
+    {
+        error_deg += 360.0f;
+    }
+    return error_deg;
+}
+
+/**
+ * @brief Compute one PID update step from an error value.
+ * @param error Signed control error.
+ * @param dt Loop period in seconds.
+ * @return PID command clamped to configured output limits.
+ */
+static float pid_update(float error, float dt)
+{
+    // Guard against invalid dt to avoid derivative blow-up and NaN/Inf.
+    if (dt <= 0.0f)
+    {
+        float out = (pid_config.kp * error) + (pid_config.ki * pid_config.integrator);
+        float out_clamped = pid_clampf(out, pid_config.out_min, pid_config.out_max);
+        pid_config.prev_error = error;
+        return out_clamped;
+    }
 
     // P
-    float p = pid->kp * error;
+    float p = pid_config.kp * error;
 
     // I
-    pid->integrator += error * dt;
-    float i = pid->ki * pid->integrator;
+    pid_config.integrator += error * dt;
+    float i = pid_config.ki * pid_config.integrator;
 
     // D (derivative on error)
-    float d = pid->kd * ((error - pid->prev_error) / dt);
+    float safe_dt = (dt < PID_DT_MIN_S) ? PID_DT_MIN_S : dt;
+    float d = pid_config.kd * ((error - pid_config.prev_error) / safe_dt);
 
     float out = p + i + d;
 
     // Clamp output
-    float out_clamped = clampf(out, pid->out_min, pid->out_max);
+    float out_clamped = pid_clampf(out, pid_config.out_min, pid_config.out_max);
 
     // Simple anti-windup: only integrate when not saturated
-    if (out != out_clamped) {
-        pid->integrator -= error * dt; // undo integration this step
+    if (out != out_clamped)
+    {
+        pid_config.integrator -= error * dt; // undo integration this step
     }
 
-    pid->prev_error = error;
+    pid_config.prev_error = error;
     return out_clamped;
 }
 
-static PID_t pid_angle = {
-    .kp = 0.001f,     // start here, tune
-    .ki = 0.00f,     // add later if needed
-    .kd = 0.001f,    // small, optional
-    .integrator = 0.0f,
-    .prev_error = 0.0f,
-    .out_min = -1.0f,
-    .out_max =  1.0f
-};
 
-// Deadband helps stop “buzzing” near the target
-#define ANGLE_DEADBAND_DEG  1.0f
-
-float angle_pid_step(float target_angle_deg, float dt)
+/* Public Functions */
+/**
+ * @brief Initialize PID gains, limits, and internal state from a config struct.
+ * @param config PID configuration and state seed values.
+ */
+void pid_init(pid_config_t* config)
 {
-    float angle_deg = encoder_get_angle_deg();   // your function
+    pid_config = *config;
+}
 
-    float error = target_angle_deg - angle_deg;
-    if (error < 0) error = -error;
+/**
+ * @brief Run PID for angle control and return the commanded motor input.
+ * @param target_angle_deg Desired output angle in degrees.
+ * @param dt Loop period in seconds.
+ * @return Signed motor command (typically in configured output range).
+ */
+float pid_stepAndGetCommand(float target_angle_deg, float dt)
+{
+    float angle_deg = motor_controller_encoderGetAngleDeg();
+    float signed_error = pid_wrapAngleErrorDeg(target_angle_deg - angle_deg);
+    float abs_error = signed_error;
+    if (abs_error < 0)
+    {
+        abs_error = -abs_error;
+    }
 
-    if (error < ANGLE_DEADBAND_DEG) {
-        pid_angle.integrator = 0.0f;  // optional
-        return 0.0f;                  // stop motor
+    if (abs_error < pid_config.deadband_angle)
+    {
+        // Keep derivative state fresh and bleed integrator instead of hard reset.
+        pid_config.prev_error = signed_error;
+        pid_config.integrator *= PID_DEADBAND_INTEGRATOR_LEAK;
+        return 0.0f;
     }
 
     // PID output in -1..+1 (direction + duty)
-    float cmd = pid_update(&pid_angle, target_angle_deg, angle_deg, dt);
+    float cmd = pid_update(signed_error, dt);
     return cmd;
 }
 

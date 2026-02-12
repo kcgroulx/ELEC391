@@ -26,6 +26,7 @@
 /* USER CODE BEGIN Includes */
 
 #include "motor_control.h"
+#include "pid.h"
 
 /* USER CODE END Includes */
 
@@ -97,9 +98,29 @@ int main(void)
   MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
 
-  motor_control_init(&htim2, TIM_CHANNEL_1, &htim3, TIM_CHANNEL_1);
+  // Initialize motor controller
+  static motor_control_config_t motor_control_config = {
+    .halfBridge1Htim = &htim2,
+    .halfBridge2Htim = &htim3,
+    .encoderHtim = &htim1,
+    .halfBridge1Channel = TIM_CHANNEL_1,
+    .halfBridge2Channel = TIM_CHANNEL_1
+  };
+  motor_control_init(&motor_control_config);
 
-  HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_ALL);
+  // Initialize PID
+  pid_config_t pid_config = {
+    .kp = 0.001f,
+    .ki = 0.0f,
+    .kd = 0.001f,
+    .integrator = 0.0f,
+    .prev_error = 0.0f,
+    .out_min = -1.0f,
+    .out_max =  1.0f,
+    .deadband_angle = 2.0f
+  };
+  pid_init(&pid_config);
+
   HAL_TIM_Base_Start_IT(&htim4);
 
   /* USER CODE END 2 */
