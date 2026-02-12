@@ -30,7 +30,6 @@ static float prev_velocity = 0.0f;
 static bool homed = true;
 static float homing_speed = -0.25f;
 static float limit_switch_angle = 0.0f;   // deg
-static float target_angle = 30.0f;         // deg
 
 /* -------- State -------- */
 static float prev_angle = 0.0f;
@@ -60,7 +59,13 @@ void motor_setCommand(float u);
 /* ===================== Control Loop ===================== */
 /* Call this from a 1 kHz timer ISR */
 
-void cascaded_control_step(void)
+/**
+ * @brief Execute one step of cascaded position–velocity control.
+ * @param target_angle_deg Desired target angle in degrees.
+ *
+ * Call this from a fixed-rate (e.g. 1 kHz) timer ISR.
+ */
+void cascaded_control_step(float target_angle_deg)
 {
     /* -------- Encoder measurement -------- */
     float measured_angle = encoder_getAngleDeg();
@@ -90,7 +95,7 @@ void cascaded_control_step(void)
     {
         /* -------- Position loop -------- */
         float pos_error =
-            wrap_angle_error(target_angle - measured_angle); // signed error in -180..+180 deg
+            wrap_angle_error(target_angle_deg - measured_angle);
 
         desired_velocity = Kp_pos * pos_error;
 
@@ -130,5 +135,5 @@ void cascaded_control_step(void)
     }
 
     /* -------- Actuate motor -------- */
-    motor_setCommand(control);
+     motor_control_setMotorSpeed(control);
 }

@@ -215,11 +215,12 @@ void TIM4_IRQHandler(void)
   HAL_TIM_IRQHandler(&htim4);
   /* USER CODE BEGIN TIM4_IRQn 1 */
 
-  motor_controller_encoderUpdatePosition();
 
-  float pid_command = pid_stepAndGetCommand(target_angle, 0.001f);
+  cascaded_control_step(target_angle);
 
-  motor_control_setMotorSpeed(pid_command);
+  //motor_controller_encoderUpdatePosition();
+ // float pid_command = pid_stepAndGetCommand(target_angle, 0.001f);
+ //motor_control_setMotorSpeed(pid_command);
 
   /* USER CODE END TIM4_IRQn 1 */
 }
