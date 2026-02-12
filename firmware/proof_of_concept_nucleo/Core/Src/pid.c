@@ -1,121 +1,134 @@
 /**
- * @file pid.c
- * @brief PID control utilities for closed-loop motor angle control.
- *
- * Provides PID state update and a helper that generates a motor command from
- * encoder angle feedback and a target angle.
+ * @file cascaded_pid.c
+ * @brief Cascaded position–velocity PID motor control (MATLAB-equivalent)
  */
 
-/* Includes */
+#include <stdbool.h>
 #include <stdint.h>
-#include "pid.h"
-#include "motor_control.h"
 
-static pid_config_t pid_config;
-static const float PID_DT_MIN_S = 1.0e-6f;
-static const float PID_DEADBAND_INTEGRATOR_LEAK = 0.999f;
+/* ===================== Parameters ===================== */
 
-/* Private Functions */
-static inline float pid_clampf(float x, float lo, float hi)
+#define DT 0.001f   // 1 kHz
+
+/* -------- Position loop (outer) -------- */
+static float Kp_pos = 5.0f;              // angle -> velocity
+static float max_velocity = 180.0f;      // deg/s (example)
+
+/* -------- Velocity loop (inner PID) -------- */
+static float Kp_vel = 20.0f; //50.0f; for when doing linear motion
+static float Ki_vel = 4.0f;
+static float Kd_vel = 1.0f;
+
+static float vel_integrator = 0.0f;
+static float vel_integrator_limit = 1.5f;
+static float output_limit = 0.9f;
+
+static float prev_vel_error = 0.0f;
+static float prev_velocity = 0.0f;
+
+/* -------- Homing -------- */
+static bool homed = true;
+static float homing_speed = -0.25f;
+static float limit_switch_angle = 0.0f;   // deg
+static float target_angle = 30.0f;         // deg
+
+/* -------- State -------- */
+static float prev_angle = 0.0f;
+
+/* ===================== Utility ===================== */
+
+static inline float clamp(float x, float min, float max)
 {
-    if (x < lo) return lo;
-    if (x > hi) return hi;
+    if (x > max) return max;
+    if (x < min) return min;
     return x;
 }
 
-static float pid_wrapAngleErrorDeg(float error_deg)
+static float wrap_angle_error(float error) //if error 250 deg, wrap to -110 deg //this makes it so the controller takes the short way around the circle
 {
-    while (error_deg > 180.0f)
-    {
-        error_deg -= 360.0f;
-    }
-    while (error_deg < -180.0f)
-    {
-        error_deg += 360.0f;
-    }
-    return error_deg;
+    while (error > 180.0f) error -= 360.0f;
+    while (error < -180.0f) error += 360.0f;
+    return error;
 }
 
-/**
- * @brief Compute one PID update step from an error value.
- * @param error Signed control error.
- * @param dt Loop period in seconds.
- * @return PID command clamped to configured output limits.
- */
-static float pid_update(float error, float dt)
+/* ===================== Hardware hooks ===================== */
+/* YOU implement these */
+
+float encoder_getAngleDeg(void);
+void motor_setCommand(float u);
+
+/* ===================== Control Loop ===================== */
+/* Call this from a 1 kHz timer ISR */
+
+void cascaded_control_step(void)
 {
-    // Guard against invalid dt to avoid derivative blow-up and NaN/Inf.
-    if (dt <= 0.0f)
+    /* -------- Encoder measurement -------- */
+    float measured_angle = encoder_getAngleDeg();
+    float measured_velocity =
+        (measured_angle - prev_angle) / DT;
+
+    prev_angle = measured_angle;
+
+    float control = 0.0f;
+    float desired_velocity = 0.0f;
+
+    /* -------- Homing logic -------- */
+    if (!homed)
     {
-        float out = (pid_config.kp * error) + (pid_config.ki * pid_config.integrator);
-        float out_clamped = pid_clampf(out, pid_config.out_min, pid_config.out_max);
-        pid_config.prev_error = error;
-        return out_clamped;
+        control = homing_speed;
+
+        if (measured_angle <= limit_switch_angle)
+        {
+            homed = true;
+
+            vel_integrator = 0.0f;
+            prev_vel_error = 0.0f;
+            prev_velocity = 0.0f;
+        }
+    }
+    else
+    {
+        /* -------- Position loop -------- */
+        float pos_error =
+            wrap_angle_error(target_angle - measured_angle); // signed error in -180..+180 deg
+
+        desired_velocity = Kp_pos * pos_error;
+
+        desired_velocity =
+            clamp(desired_velocity,
+                  -max_velocity,
+                   max_velocity);
+
+        /* -------- Velocity loop -------- */
+        float vel_error =
+            desired_velocity - measured_velocity;
+
+        /* Trapezoidal integrator */
+        vel_integrator +=
+            0.5f * (vel_error + prev_vel_error) * DT;
+
+        vel_integrator =
+            clamp(vel_integrator,
+                  -vel_integrator_limit,
+                   vel_integrator_limit);
+
+        /* Derivative on measurement */
+        float d_vel =
+            (measured_velocity - prev_velocity) / DT;
+
+        float u =
+            (Kp_vel * vel_error) +
+            (Ki_vel * vel_integrator) -
+            (Kd_vel * d_vel);
+
+        u = clamp(u, -output_limit, output_limit);
+
+        control = u;
+
+        prev_vel_error = vel_error;
+        prev_velocity = measured_velocity;
     }
 
-    // P
-    float p = pid_config.kp * error;
-
-    // I
-    pid_config.integrator += error * dt;
-    float i = pid_config.ki * pid_config.integrator;
-
-    // D (derivative on error)
-    float safe_dt = (dt < PID_DT_MIN_S) ? PID_DT_MIN_S : dt;
-    float d = pid_config.kd * ((error - pid_config.prev_error) / safe_dt);
-
-    float out = p + i + d;
-
-    // Clamp output
-    float out_clamped = pid_clampf(out, pid_config.out_min, pid_config.out_max);
-
-    // Simple anti-windup: only integrate when not saturated
-    if (out != out_clamped)
-    {
-        pid_config.integrator -= error * dt; // undo integration this step
-    }
-
-    pid_config.prev_error = error;
-    return out_clamped;
+    /* -------- Actuate motor -------- */
+    motor_setCommand(control);
 }
-
-
-/* Public Functions */
-/**
- * @brief Initialize PID gains, limits, and internal state from a config struct.
- * @param config PID configuration and state seed values.
- */
-void pid_init(pid_config_t* config)
-{
-    pid_config = *config;
-}
-
-/**
- * @brief Run PID for angle control and return the commanded motor input.
- * @param target_angle_deg Desired output angle in degrees.
- * @param dt Loop period in seconds.
- * @return Signed motor command (typically in configured output range).
- */
-float pid_stepAndGetCommand(float target_angle_deg, float dt)
-{
-    float angle_deg = motor_controller_encoderGetAngleDeg();
-    float signed_error = pid_wrapAngleErrorDeg(target_angle_deg - angle_deg);
-    float abs_error = signed_error;
-    if (abs_error < 0)
-    {
-        abs_error = -abs_error;
-    }
-
-    if (abs_error < pid_config.deadband_angle)
-    {
-        // Keep derivative state fresh and bleed integrator instead of hard reset.
-        pid_config.prev_error = signed_error;
-        pid_config.integrator *= PID_DEADBAND_INTEGRATOR_LEAK;
-        return 0.0f;
-    }
-
-    // PID output in -1..+1 (direction + duty)
-    float cmd = pid_update(signed_error, dt);
-    return cmd;
-}
-

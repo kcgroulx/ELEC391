@@ -1,69 +1,39 @@
-/************************************************************
- * Cascaded Position–Velocity PID Control (1 kHz)
- * Mirrors provided MATLAB simulation
- *
- * Units:
- *  - Position: meters
- *  - Velocity: m/s
- *  - Control output: normalized motor command [-1, 1]
- ************************************************************/
+/**
+ * @file cascaded_pid.c
+ * @brief Cascaded position–velocity PID motor control (MATLAB-equivalent)
+ */
 
 #include <stdbool.h>
 #include <stdint.h>
 
-/* ===================== Constants ===================== */
+/* ===================== Parameters ===================== */
 
-#define DT 0.001f    // 1 kHz control loop
+#define DT 0.001f   // 1 kHz
 
-/* -------- Position loop -------- */
-#define KP_POS        5.0f
-#define MAX_VELOCITY  0.4f   // m/s
+/* -------- Position loop (outer) -------- */
+static float Kp_pos = 5.0f;              // angle -> velocity
+static float max_velocity = 180.0f;      // deg/s (example)
 
-/* -------- Velocity PID -------- */
-#define KP_VEL  50.0f
-#define KI_VEL  4.0f
-#define KD_VEL  1.0f
+/* -------- Velocity loop (inner PID) -------- */
+static float Kp_vel = 20.0f; //50.0f; for when doing linear motion
+static float Ki_vel = 4.0f;
+static float Kd_vel = 1.0f;
 
-#define INTEGRATOR_LIMIT  1.5f
-#define OUTPUT_LIMIT      0.9f
+static float vel_integrator = 0.0f;
+static float vel_integrator_limit = 1.5f;
+static float output_limit = 0.9f;
+
+static float prev_vel_error = 0.0f;
+static float prev_velocity = 0.0f;
 
 /* -------- Homing -------- */
-#define HOMING_SPEED        -0.25f
-#define LIMIT_SWITCH_POS     0.0f   // meters
-
-/* ===================== Types ===================== */
-
-typedef struct {
-    float kp;
-    float ki;
-    float kd;
-
-    float integrator;
-    float integrator_limit;
-
-    float prev_error;
-    float prev_measurement;
-
-    float output_limit;
-} PID_Controller;
-
-/* ===================== Globals ===================== */
-
-static PID_Controller vel_pid = {
-    .kp = KP_VEL,
-    .ki = KI_VEL,
-    .kd = KD_VEL,
-    .integrator = 0.0f,
-    .integrator_limit = INTEGRATOR_LIMIT,
-    .prev_error = 0.0f,
-    .prev_measurement = 0.0f,
-    .output_limit = OUTPUT_LIMIT
-};
-
 static bool homed = true;
-static float target_position = 0.02f;   // meters
+static float homing_speed = -0.25f;
+static float limit_switch_angle = 0.0f;   // deg
+static float target_angle = 30.0f;         // deg
 
-static float prev_position = 0.0f;
+/* -------- State -------- */
+static float prev_angle = 0.0f;
 
 /* ===================== Utility ===================== */
 
@@ -74,105 +44,91 @@ static inline float clamp(float x, float min, float max)
     return x;
 }
 
-/* ===================== Hardware Stubs ===================== */
-/* YOU must implement these for your system */
-
-float read_encoder_position_m(void)
+static float wrap_angle_error(float error) //if error 250 deg, wrap to -110 deg //this makes it so the controller takes the short way around the circle
 {
-    // Return measured position in meters
-    return 0.0f;
+    while (error > 180.0f) error -= 360.0f;
+    while (error < -180.0f) error += 360.0f;
+    return error;
 }
 
-void set_motor_output(float u)
+/* ===================== Hardware hooks ===================== */
+/* YOU implement these */
+
+float encoder_getAngleDeg(void);
+void motor_setCommand(float u);
+
+/* ===================== Control Loop ===================== */
+/* Call this from a 1 kHz timer ISR */
+
+void cascaded_control_step(void)
 {
-    // u ∈ [-0.9, 0.9]
-    // Map to PWM / DAC / current command
-    (void)u;
-}
+    /* -------- Encoder measurement -------- */
+    float measured_angle = encoder_getAngleDeg();
+    float measured_velocity =
+        (measured_angle - prev_angle) / DT;
 
-/* ===================== Velocity PID ===================== */
+    prev_angle = measured_angle;
 
-static float velocity_pid_update(PID_Controller *pid,
-                                 float desired_velocity,
-                                 float measured_velocity)
-{
-    float error = desired_velocity - measured_velocity;
-
-    // Trapezoidal integrator
-    pid->integrator += 0.5f * (error + pid->prev_error) * DT;
-    pid->integrator = clamp(pid->integrator,
-                            -pid->integrator_limit,
-                             pid->integrator_limit);
-
-    // Derivative on measurement
-    float d_meas = (measured_velocity - pid->prev_measurement) / DT;
-
-    float u = pid->kp * error
-            + pid->ki * pid->integrator
-            - pid->kd * d_meas;
-
-    u = clamp(u, -pid->output_limit, pid->output_limit);
-
-    pid->prev_error = error;
-    pid->prev_measurement = measured_velocity;
-
-    return u;
-}
-
-/* ===================== 1 kHz Control Loop ===================== */
-/* Call this from a timer ISR */
-
-void control_loop_1khz(void)
-{
-    float measured_position = read_encoder_position_m();
-    float measured_velocity;
+    float control = 0.0f;
     float desired_velocity = 0.0f;
-    float motor_command = 0.0f;
 
-    /* Velocity estimation */
-    measured_velocity = (measured_position - prev_position) / DT;
-    prev_position = measured_position;
+    /* -------- Homing logic -------- */
+    if (!homed)
+    {
+        control = homing_speed;
 
-    /* -------- Homing -------- */
-    if (!homed) {
-        motor_command = HOMING_SPEED;
-
-        if (measured_position <= LIMIT_SWITCH_POS) {
+        if (measured_angle <= limit_switch_angle)
+        {
             homed = true;
 
-            vel_pid.integrator = 0.0f;
-            vel_pid.prev_error = 0.0f;
-            vel_pid.prev_measurement = 0.0f;
+            vel_integrator = 0.0f;
+            prev_vel_error = 0.0f;
+            prev_velocity = 0.0f;
         }
     }
-    else {
+    else
+    {
         /* -------- Position loop -------- */
-        float pos_error = target_position - measured_position;
-        desired_velocity = KP_POS * pos_error;
+        float pos_error =
+            wrap_angle_error(target_angle - measured_angle); // signed error in -180..+180 deg
 
-        desired_velocity = clamp(desired_velocity,
-                                 -MAX_VELOCITY,
-                                  MAX_VELOCITY);
+        desired_velocity = Kp_pos * pos_error;
+
+        desired_velocity =
+            clamp(desired_velocity,
+                  -max_velocity,
+                   max_velocity);
 
         /* -------- Velocity loop -------- */
-        motor_command = velocity_pid_update(&vel_pid,
-                                             desired_velocity,
-                                             measured_velocity);
+        float vel_error =
+            desired_velocity - measured_velocity;
+
+        /* Trapezoidal integrator */
+        vel_integrator +=
+            0.5f * (vel_error + prev_vel_error) * DT;
+
+        vel_integrator =
+            clamp(vel_integrator,
+                  -vel_integrator_limit,
+                   vel_integrator_limit);
+
+        /* Derivative on measurement */
+        float d_vel =
+            (measured_velocity - prev_velocity) / DT;
+
+        float u =
+            (Kp_vel * vel_error) +
+            (Ki_vel * vel_integrator) -
+            (Kd_vel * d_vel);
+
+        u = clamp(u, -output_limit, output_limit);
+
+        control = u;
+
+        prev_vel_error = vel_error;
+        prev_velocity = measured_velocity;
     }
 
     /* -------- Actuate motor -------- */
-    set_motor_output(motor_command);
-}
-
-/* ===================== Optional main ===================== */
-/* Control loop should normally run from a timer ISR */
-
-int main(void)
-{
-    // Init hardware here (timers, encoder, PWM, etc.)
-
-    while (1) {
-        // Main loop does nothing
-        // control_loop_1khz() runs in timer interrupt
-    }
+    motor_setCommand(control);
 }
