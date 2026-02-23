@@ -35,5 +35,6 @@ void motor_control_init(motor_control_config_t* config);
 void motor_control_setMotorSpeed(float speed);
 void motor_controller_encoderUpdatePosition(void);
 float motor_controller_encoderGetAngleDeg(void);
+int32_t motor_controller_encoderGetPositionCounts(void);
 
 #endif /* SRC_MOTOR_CONTROL_H_ */

@@ -5,6 +5,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "motor_control.h"
 
 /* ===================== Parameters ===================== */
 
@@ -13,11 +14,12 @@
 /* -------- Position loop (outer) -------- */
 static float Kp_pos = 5.0f;              // angle -> velocity
 static float max_velocity = 180.0f;      // deg/s (example)
+static float position_deadband_deg = 1.5f;
 
 /* -------- Velocity loop (inner PID) -------- */
 static float Kp_vel = 20.0f; //50.0f; for when doing linear motion
-static float Ki_vel = 4.0f;
-static float Kd_vel = 1.0f;
+static float Ki_vel = 0.0f;
+static float Kd_vel = 0.0f;
 
 static float vel_integrator = 0.0f;
 static float vel_integrator_limit = 1.5f;
@@ -43,18 +45,7 @@ static inline float clamp(float x, float min, float max)
     return x;
 }
 
-static float wrap_angle_error(float error) //if error 250 deg, wrap to -110 deg //this makes it so the controller takes the short way around the circle
-{
-    while (error > 180.0f) error -= 360.0f;
-    while (error < -180.0f) error += 360.0f;
-    return error;
-}
-
 /* ===================== Hardware hooks ===================== */
-/* YOU implement these */
-
-float encoder_getAngleDeg(void);
-void motor_setCommand(float u);
 
 /* ===================== Control Loop ===================== */
 /* Call this from a 1 kHz timer ISR */
@@ -65,10 +56,10 @@ void motor_setCommand(float u);
  *
  * Call this from a fixed-rate (e.g. 1 kHz) timer ISR.
  */
-void cascaded_control_step(float target_angle_deg)
+float cascaded_control_step(float target_angle_deg)
 {
     /* -------- Encoder measurement -------- */
-    float measured_angle = encoder_getAngleDeg();
+    float measured_angle = motor_controller_encoderGetAngleDeg();
     float measured_velocity =
         (measured_angle - prev_angle) / DT;
 
@@ -94,8 +85,19 @@ void cascaded_control_step(float target_angle_deg)
     else
     {
         /* -------- Position loop -------- */
-        float pos_error =
-            wrap_angle_error(target_angle_deg - measured_angle);
+        float pos_error = target_angle_deg - measured_angle;
+        float abs_pos_error = (pos_error < 0.0f) ? -pos_error : pos_error;
+
+        if (abs_pos_error <= position_deadband_deg)
+        {
+            // Stop driving near the setpoint and clear inner-loop memory.
+            vel_integrator = 0.0f;
+            prev_vel_error = 0.0f;
+            prev_velocity = measured_velocity;
+            control = 0.0f;
+            motor_control_setMotorSpeed(control);
+            return;
+        }
 
         desired_velocity = Kp_pos * pos_error;
 
@@ -128,12 +130,15 @@ void cascaded_control_step(float target_angle_deg)
 
         u = clamp(u, -output_limit, output_limit);
 
+        // if (u>0)
+        //     u = 0.5;
+        // else
+        //     u = -0.5;
+        
         control = u;
 
         prev_vel_error = vel_error;
         prev_velocity = measured_velocity;
     }
-
-    /* -------- Actuate motor -------- */
-     motor_control_setMotorSpeed(control);
+    return control;
 }

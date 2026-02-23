@@ -22,8 +22,10 @@
 #include "stm32f1xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdio.h>
 #include "motor_control.h"
 #include "pid.h"
+#include "usart.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -43,7 +45,10 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
-
+float target_angle = 90.0f;
+float actual_angle;
+float motor_command;
+static uint16_t enc_print_divider = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -203,10 +208,6 @@ void SysTick_Handler(void)
 /**
   * @brief This function handles TIM4 global interrupt.
   */
-
-float target_angle = 180.0f;
-float actual_angle = 0.0f;
-
 void TIM4_IRQHandler(void)
 {
   /* USER CODE BEGIN TIM4_IRQn 0 */
@@ -215,12 +216,32 @@ void TIM4_IRQHandler(void)
   HAL_TIM_IRQHandler(&htim4);
   /* USER CODE BEGIN TIM4_IRQn 1 */
 
+  actual_angle = motor_controller_encoderGetAngleDeg();
 
-  cascaded_control_step(target_angle);
+  motor_controller_encoderUpdatePosition();
 
-  //motor_controller_encoderUpdatePosition();
- // float pid_command = pid_stepAndGetCommand(target_angle, 0.001f);
- //motor_control_setMotorSpeed(pid_command);
+  motor_command = cascaded_control_step(target_angle);
+
+  motor_control_setMotorSpeed(motor_command);
+
+  if (++enc_print_divider >= 50)
+  {
+    enc_print_divider = 0;
+    int32_t counts = motor_controller_encoderGetPositionCounts();
+    char msg[80];
+    int len = snprintf(
+      msg,
+      sizeof(msg),
+      "enc_position_counts=%ld,motor_command=%.4f\r\n",
+      (long)counts,
+      (double)motor_command
+    );
+    if (len > 0)
+    {
+      uint16_t tx_len = (len < (int)sizeof(msg)) ? (uint16_t)len : (uint16_t)(sizeof(msg) - 1U);
+      HAL_UART_Transmit(&huart2, (uint8_t *)msg, tx_len, 10);
+    }
+  }
 
   /* USER CODE END TIM4_IRQn 1 */
 }
@@ -242,3 +263,4 @@ void EXTI15_10_IRQHandler(void)
 /* USER CODE BEGIN 1 */
 
 /* USER CODE END 1 */
+

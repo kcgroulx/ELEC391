@@ -108,19 +108,6 @@ int main(void)
   };
   motor_control_init(&motor_control_config);
 
-  // Initialize PID
-  pid_config_t pid_config = {
-    .kp = 0.001f,
-    .ki = 0.0f,
-    .kd = 0.001f,
-    .integrator = 0.0f,
-    .prev_error = 0.0f,
-    .out_min = -1.0f,
-    .out_max =  1.0f,
-    .deadband_angle = 2.0f
-  };
-  pid_init(&pid_config);
-
   HAL_TIM_Base_Start_IT(&htim4);
 
   /* USER CODE END 2 */
