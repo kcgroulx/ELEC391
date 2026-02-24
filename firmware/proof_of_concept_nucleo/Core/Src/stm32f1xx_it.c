@@ -220,7 +220,13 @@ void TIM4_IRQHandler(void)
   actual_angle = motor_controller_encoderGetAngleDeg();
 
   // target_angle = ((float)HAL_ADC_GetValue(&hadc1) / ADC_MAX_COUNTS) * TARGET_ANGLE_MAX_DEG;
-  static const float target_sequence_deg[] = {0.0f, 720.0f, 0.0f, 720.0f, 0.0f, -90.0f};
+  static const float target_sequence_deg[] = {
+    0.0f, 180.0f, -180.0f, 360.0f, 0.0f,
+    /* small-step staircase (+10 deg each) */
+    0.0f, 45.0f, 90.0f, 135.0f, 180.0f,
+    /* large moves again */
+    0.0f, -90.0f, -180.0f, -270.0f, 0.0f
+  };
   static uint32_t target_index = 0;
   static uint16_t settled_ticks = 0;
   const float reach_tolerance_deg = 3.0f;
