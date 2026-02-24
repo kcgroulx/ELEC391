@@ -104,7 +104,7 @@ void motor_controller_encoderUpdatePosition(void)
  */
 float motor_controller_encoderGetAngleDeg(void)
 {
-    return ((float)enc_position_counts / ENCODER_CPR_OUTPUT) * 360.0f * 2.0f; // TODO: check why we need * 2.0
+    return ((float)enc_position_counts / ENCODER_CPR_OUTPUT) * 360.0f; // TODO: check why we need * 2.0
 
 }
 
@@ -116,3 +116,4 @@ int32_t motor_controller_encoderGetPositionCounts(void)
 {
     return enc_position_counts;
 }
+

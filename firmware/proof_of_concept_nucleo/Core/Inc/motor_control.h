@@ -12,7 +12,7 @@
 #include "tim.h"
 
 /* Defines */
-#define ENCODER_CPR_MOTOR   64.0f
+#define ENCODER_CPR_MOTOR   32.0f
 #define GEAR_RATIO          30.0f
 #define ENCODER_CPR_OUTPUT  (ENCODER_CPR_MOTOR * GEAR_RATIO)
 
