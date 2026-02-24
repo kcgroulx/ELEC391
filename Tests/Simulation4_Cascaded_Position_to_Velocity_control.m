@@ -26,13 +26,13 @@ Kp_pos = 5;            % position → velocity
 max_velocity = 0.4;      % m/s limit
 
 %% -------- Velocity loop (inner PID) --------
-Kp_vel = 50;
+Kp_vel = 20;
 Ki_vel = 4;
 Kd_vel = 1;
 
 vel_integrator = 0;
 vel_integrator_limit = 1.5;
-output_limit = 0.9;
+output_limit = 1;
 
 prev_vel_error = 0;
 prev_velocity = 0;
@@ -41,7 +41,7 @@ prev_velocity = 0;
 limit_switch_position = 0.0;
 homed = true;
 homing_speed = -0.25;
-target_position = 0.02;
+target_position = 0.04;
 
 %% Logs
 control = zeros(1,steps);
