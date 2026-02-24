@@ -1,147 +1,96 @@
 /**
- * @file cascaded_pid.c
- * @brief Cascaded position–velocity PID motor control (MATLAB-equivalent)
+ * @file pid.c
+ * @brief Fresh position PID controller for motor angle control.
  */
 
-#include <stdbool.h>
-#include <stdint.h>
 #include "motor_control.h"
 
-/* ===================== Parameters ===================== */
+#define DT 0.001f
 
-#define DT 0.001f   // 1 kHz
+/* Position PID gains (normalized motor command output) */
+static float kp = 0.0300f;
+static float ki = 0.0015f;
+static float kd = 0.0008f;
 
-/* -------- Position loop (outer) -------- */
-static float Kp_pos = 5.0f;              // angle -> velocity
-static float max_velocity = 180.0f;      // deg/s (example)
-static float position_deadband_deg = 2.0f;
+/* Controller limits and shaping */
+static float output_limit = 1.0f;
+static float deadband_deg = 1.5f;
+static float i_zone_deg = 40.0f;
+static float integrator_limit = 200.0f;
+static float max_command_step = 0.02f; /* per 1 ms tick */
+static float min_effective_command = 0.08f; /* overcome static friction */
 
-/* -------- Velocity loop (inner PID) -------- */
-static float Kp_vel = 20.0f; //50.0f; for when doing linear motion
-static float Ki_vel = 3.0f;
-static float Kd_vel = 1.0f;
+/* Derivative filtering on measurement */
+static float d_lpf_alpha = 0.15f;
 
-static float vel_integrator = 0.0f;
-static float vel_integrator_limit = 1.5f;
-static float output_limit = 0.9f;
-
-static float prev_vel_error = 0.0f;
-static float prev_velocity = 0.0f;
-
-/* -------- Homing -------- */
-static bool homed = true;
-static float homing_speed = -0.25f;
-static float limit_switch_angle = 0.0f;   // deg
-
-/* -------- State -------- */
+/* Internal state */
+static float integrator = 0.0f;
 static float prev_angle = 0.0f;
+static float d_filtered = 0.0f;
+static float prev_command = 0.0f;
 
-/* ===================== Utility ===================== */
-
-static inline float clamp(float x, float min, float max)
+static inline float clampf(float x, float lo, float hi)
 {
-    if (x > max) return max;
-    if (x < min) return min;
+    if (x < lo) return lo;
+    if (x > hi) return hi;
     return x;
 }
 
-/* ===================== Hardware hooks ===================== */
-
-/* ===================== Control Loop ===================== */
-/* Call this from a 1 kHz timer ISR */
-
-/**
- * @brief Execute one step of cascaded position–velocity control.
- * @param target_angle_deg Desired target angle in degrees.
- *
- * Call this from a fixed-rate (e.g. 1 kHz) timer ISR.
+/*
+ * Kept function name for compatibility with existing call sites.
+ * This is a single-loop position PID, not a cascaded controller.
  */
 float cascaded_control_step(float target_angle_deg)
 {
-    /* -------- Encoder measurement -------- */
-    float measured_angle = motor_controller_encoderGetAngleDeg();
-    float measured_velocity =
-        (measured_angle - prev_angle) / DT;
+    float angle = motor_controller_encoderGetAngleDeg();
+    float error = target_angle_deg - angle;
+    float abs_error = (error < 0.0f) ? -error : error;
 
-    prev_angle = measured_angle;
+    /* Derivative on measurement to reduce derivative kick */
+    float angle_rate = (angle - prev_angle) / DT;
+    prev_angle = angle;
+    d_filtered += d_lpf_alpha * (angle_rate - d_filtered);
 
-    float control = 0.0f;
-    float desired_velocity = 0.0f;
-
-    /* -------- Homing logic -------- */
-    if (!homed)
+    if (abs_error <= deadband_deg)
     {
-        control = homing_speed;
+        integrator = 0.0f;
+        prev_command = 0.0f;
+        return 0.0f;
+    }
 
-        if (measured_angle <= limit_switch_angle)
-        {
-            homed = true;
-
-            vel_integrator = 0.0f;
-            prev_vel_error = 0.0f;
-            prev_velocity = 0.0f;
-        }
+    /* Integrate only near target to avoid windup during large moves */
+    if (abs_error <= i_zone_deg)
+    {
+        integrator += error * DT;
+        integrator = clampf(integrator, -integrator_limit, integrator_limit);
     }
     else
     {
-        /* -------- Position loop -------- */
-        float pos_error = target_angle_deg - measured_angle;
-        float abs_pos_error = (pos_error < 0.0f) ? -pos_error : pos_error;
-
-        if (abs_pos_error <= position_deadband_deg)
-        {
-            // Stop driving near the setpoint and clear inner-loop memory.
-            vel_integrator = 0.0f;
-            prev_vel_error = 0.0f;
-            prev_velocity = measured_velocity;
-            return 0.0f;
-        }
-
-        desired_velocity = Kp_pos * pos_error;
-
-        desired_velocity =
-            clamp(desired_velocity,
-                  -max_velocity,
-                   max_velocity);
-
-        /* -------- Velocity loop -------- */
-        float vel_error =
-            desired_velocity - measured_velocity;
-
-        /* Trapezoidal integrator */
-        vel_integrator +=
-            0.5f * (vel_error + prev_vel_error) * DT;
-
-        vel_integrator =
-            clamp(vel_integrator,
-                  -vel_integrator_limit,
-                   vel_integrator_limit);
-
-        /* Derivative on measurement */
-        float d_vel =
-            (measured_velocity - prev_velocity) / DT;
-
-        float u =
-            (Kp_vel * vel_error) +
-            (Ki_vel * vel_integrator) -
-            (Kd_vel * d_vel);
-
-        u = clamp(u, -output_limit, output_limit);
-
-        // Prevent brief reverse "twitches" caused by quantized velocity noise.
-        if ((pos_error > 0.0f) && (u < 0.0f))
-        {
-            u = 0.0f;
-        }
-        else if ((pos_error < 0.0f) && (u > 0.0f))
-        {
-            u = 0.0f;
-        }
-        
-        control = u;
-
-        prev_vel_error = vel_error;
-        prev_velocity = measured_velocity;
+        integrator = 0.0f;
     }
-    return control;
+
+    float p_term = kp * error;
+    float i_term = ki * integrator;
+    float d_term = -kd * d_filtered;
+
+    float u = p_term + i_term + d_term;
+    u = clampf(u, -output_limit, output_limit);
+
+    /* Slew limit to prevent rapid sign flips on light loads */
+    float du = clampf(u - prev_command, -max_command_step, max_command_step);
+    float command = prev_command + du;
+
+    /* If command is too small to move the motor, lift it to breakaway level. */
+    if ((command > 0.0f) && (command < min_effective_command))
+    {
+        command = min_effective_command;
+    }
+    else if ((command < 0.0f) && (command > -min_effective_command))
+    {
+        command = -min_effective_command;
+    }
+
+    prev_command = command;
+
+    return command;
 }
