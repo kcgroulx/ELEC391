@@ -8,13 +8,14 @@
 #define DT 0.001f
 
 /* Position PID gains (normalized motor command output) */
-static float kp = 0.0300f;
-static float ki = 0.0015f;
+static float kp = 0.0310f;
+static float ki = 0.0018f;
 static float kd = 0.0008f;
 
 /* Controller limits and shaping */
 static float output_limit = 1.0f;
-static float deadband_deg = 1.5f;
+static float deadband_deg = 1.0f;
+static float breakaway_error_deg = 4.0f;
 static float i_zone_deg = 40.0f;
 static float integrator_limit = 200.0f;
 static float max_command_step = 0.02f; /* per 1 ms tick */
@@ -80,14 +81,30 @@ float cascaded_control_step(float target_angle_deg)
     float du = clampf(u - prev_command, -max_command_step, max_command_step);
     float command = prev_command + du;
 
-    /* If command is too small to move the motor, lift it to breakaway level. */
-    if ((command > 0.0f) && (command < min_effective_command))
+    /*
+     * Breakaway compensation:
+     * 1) only far enough from target
+     * 2) only in the same direction as position error
+     * This avoids getting stuck at +/-min command in the wrong direction.
+     */
+    float abs_command = (command < 0.0f) ? -command : command;
+    if (abs_error > breakaway_error_deg)
     {
-        command = min_effective_command;
-    }
-    else if ((command < 0.0f) && (command > -min_effective_command))
-    {
-        command = -min_effective_command;
+        if ((command * error) > 0.0f)
+        {
+            if ((command > 0.0f) && (abs_command < min_effective_command))
+            {
+                command = min_effective_command;
+            }
+            else if ((command < 0.0f) && (abs_command < min_effective_command))
+            {
+                command = -min_effective_command;
+            }
+        }
+        else if ((command * error) < 0.0f)
+        {
+            command = 0.0f;
+        }
     }
 
     prev_command = command;
