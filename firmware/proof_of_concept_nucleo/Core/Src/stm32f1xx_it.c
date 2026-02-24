@@ -22,10 +22,9 @@
 #include "stm32f1xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include <stdio.h>
+#include "adc.h"
 #include "motor_control.h"
 #include "pid.h"
-#include "usart.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,6 +34,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define TARGET_ANGLE_MAX_DEG 360.0f
+#define ADC_MAX_COUNTS       4095.0f
 
 /* USER CODE END PD */
 
@@ -48,7 +49,6 @@
 float target_angle = 90.0f;
 float actual_angle;
 float motor_command;
-static uint16_t enc_print_divider = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -216,32 +216,41 @@ void TIM4_IRQHandler(void)
   HAL_TIM_IRQHandler(&htim4);
   /* USER CODE BEGIN TIM4_IRQn 1 */
 
+  motor_controller_encoderUpdatePosition();
   actual_angle = motor_controller_encoderGetAngleDeg();
 
-  motor_controller_encoderUpdatePosition();
+  // target_angle = ((float)HAL_ADC_GetValue(&hadc1) / ADC_MAX_COUNTS) * TARGET_ANGLE_MAX_DEG;
+  static const float target_sequence_deg[] = {0.0f, 90.0f, 180.0f, 270.0f, 360.0f, 180.0f};
+  static uint32_t target_index = 0;
+  static uint16_t settled_ticks = 0;
+  const float reach_tolerance_deg = 3.0f;
+  const uint16_t settled_ticks_required = 100; // ~100 ms at 1 kHz TIM4
+
+  target_angle = target_sequence_deg[target_index];
+
+  float angle_error = target_angle - actual_angle;
+  float abs_angle_error = (angle_error < 0.0f) ? -angle_error : angle_error;
+
+  if (abs_angle_error <= reach_tolerance_deg)
+  {
+    if (++settled_ticks >= settled_ticks_required)
+    {
+      settled_ticks = 0;
+      target_index++;
+      if (target_index >= (sizeof(target_sequence_deg) / sizeof(target_sequence_deg[0])))
+      {
+        target_index = 0;
+      }
+    }
+  }
+  else
+  {
+    settled_ticks = 0;
+  }
 
   motor_command = cascaded_control_step(target_angle);
 
   motor_control_setMotorSpeed(motor_command);
-
-  if (++enc_print_divider >= 50)
-  {
-    enc_print_divider = 0;
-    int32_t counts = motor_controller_encoderGetPositionCounts();
-    char msg[80];
-    int len = snprintf(
-      msg,
-      sizeof(msg),
-      "enc_position_counts=%ld,motor_command=%.4f\r\n",
-      (long)counts,
-      (double)motor_command
-    );
-    if (len > 0)
-    {
-      uint16_t tx_len = (len < (int)sizeof(msg)) ? (uint16_t)len : (uint16_t)(sizeof(msg) - 1U);
-      HAL_UART_Transmit(&huart2, (uint8_t *)msg, tx_len, 10);
-    }
-  }
 
   /* USER CODE END TIM4_IRQn 1 */
 }
@@ -263,4 +272,3 @@ void EXTI15_10_IRQHandler(void)
 /* USER CODE BEGIN 1 */
 
 /* USER CODE END 1 */
-

@@ -14,12 +14,12 @@
 /* -------- Position loop (outer) -------- */
 static float Kp_pos = 5.0f;              // angle -> velocity
 static float max_velocity = 180.0f;      // deg/s (example)
-static float position_deadband_deg = 1.5f;
+static float position_deadband_deg = 2.0f;
 
 /* -------- Velocity loop (inner PID) -------- */
 static float Kp_vel = 20.0f; //50.0f; for when doing linear motion
-static float Ki_vel = 0.0f;
-static float Kd_vel = 0.0f;
+static float Ki_vel = 3.0f;
+static float Kd_vel = 1.0f;
 
 static float vel_integrator = 0.0f;
 static float vel_integrator_limit = 1.5f;
@@ -94,9 +94,7 @@ float cascaded_control_step(float target_angle_deg)
             vel_integrator = 0.0f;
             prev_vel_error = 0.0f;
             prev_velocity = measured_velocity;
-            control = 0.0f;
-            motor_control_setMotorSpeed(control);
-            return;
+            return 0.0f;
         }
 
         desired_velocity = Kp_pos * pos_error;
@@ -130,10 +128,15 @@ float cascaded_control_step(float target_angle_deg)
 
         u = clamp(u, -output_limit, output_limit);
 
-        // if (u>0)
-        //     u = 0.5;
-        // else
-        //     u = -0.5;
+        // Prevent brief reverse "twitches" caused by quantized velocity noise.
+        if ((pos_error > 0.0f) && (u < 0.0f))
+        {
+            u = 0.0f;
+        }
+        else if ((pos_error < 0.0f) && (u > 0.0f))
+        {
+            u = 0.0f;
+        }
         
         control = u;
 
