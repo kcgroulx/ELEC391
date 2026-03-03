@@ -38,8 +38,8 @@ static inline float clampf(float x, float lo, float hi)
 }
 
 /*
- * Kept function name for compatibility with existing call sites.
- * This is a single-loop position PID, not a cascaded controller.
+ * Kept function name for compatibility with existing call sites. :))
+ * This is a single-loop position PID, not a cascaded controller!!!!
  */
 float cascaded_control_step(float target_angle_deg)
 {
