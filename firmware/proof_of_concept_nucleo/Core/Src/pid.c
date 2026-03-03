@@ -1,6 +1,6 @@
 /**
  * @file pid.c
- * @brief Fresh position PID controller for motor angle control.
+ * @brief PID controller for motor angle control.
  */
 
 #include "motor_control.h"

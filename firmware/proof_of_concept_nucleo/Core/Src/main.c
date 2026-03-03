@@ -119,9 +119,13 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-
+  float motor_speed = 0.5;
   while (1)
-  {
+  { 
+	motor_speed = motor_speed * -1;
+    motor_control_setMotorSpeed(motor_speed);
+    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_4);
+    HAL_Delay(1000);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

@@ -12,17 +12,19 @@
 #include "tim.h"
 
 /* Defines */
-#define ENCODER_CPR_MOTOR   32.0f
-#define GEAR_RATIO          30.0f
-#define ENCODER_CPR_OUTPUT  (ENCODER_CPR_MOTOR * GEAR_RATIO)
+#define ENCODER_CPR_MOTOR 32.0f
+#define GEAR_RATIO 30.0f
+#define ENCODER_CPR_OUTPUT (ENCODER_CPR_MOTOR * GEAR_RATIO)
 
 /* Typedefs */
-typedef struct HalfBridgePWM_t {
+typedef struct HalfBridgePWM_t
+{
     TIM_HandleTypeDef *htim;
     uint32_t Channel;
 } HalfBridgePWM_t;
 
-typedef struct motor_control_config_t {
+typedef struct motor_control_config_t
+{
     TIM_HandleTypeDef *halfBridge1Htim;
     TIM_HandleTypeDef *halfBridge2Htim;
     TIM_HandleTypeDef *encoderHtim;
@@ -31,7 +33,7 @@ typedef struct motor_control_config_t {
 } motor_control_config_t;
 
 /* Public Function Declarations */
-void motor_control_init(motor_control_config_t* config);
+void motor_control_init(motor_control_config_t *config);
 void motor_control_setMotorSpeed(float speed);
 void motor_controller_encoderUpdatePosition(void);
 float motor_controller_encoderGetAngleDeg(void);
