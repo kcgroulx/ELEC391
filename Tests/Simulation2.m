@@ -2,29 +2,29 @@
 
 % Simulation parameters
 dt = 0.001;          % time step (1 kHz)
-steps = 10000;        % number of steps 
+steps = 20000;        % number of steps 
 time = (0:steps-1)*dt;
 
 % MBK parameters
 mass = 1.0;           % kg
-damping = 1.0;        % N·s/m
-stiffness = 1.0;      % N/m
+damping = 0.1;        % N·s/m
+stiffness = 0.1;      % N/m
 
 % Initialize state variables
 position = zeros(1, steps);
 velocity = zeros(1, steps);
 
 % PID parameters
-Kp = 6.0;
-Ki = 1.0;
-Kd = 0.1;
+Kp = 0.0000000000000000000000000000000000000000001;
+Ki = 0.0000000000000000000000000000000000000000000000000001;
+Kd = .0000000000000000000000001;
 integrator = 0.0;
 prev_measurement = 0.0;
 integrator_limit = 5.0;
 output_limit = 5.0;
 
 % Target position (setpoint)
-target_position = 0.1;  % meters - .5 meter long rail
+target_position = 0.05;  % meters - .5 meter long rail
 
 % Control storage for plotting
 control = zeros(1, steps);
@@ -66,14 +66,14 @@ csvwrite('log.csv', [time', position', control']);
 
 %% Plot
 figure;
-subplot(2,1,1);
+subplot(1,1,1);
 plot(time, position);
 xlabel('Time (s)');
 ylabel('Position (m)');
 grid on;
 
-subplot(2,1,2);
-plot(time, control);
-xlabel('Time (s)');
-ylabel('Control Effort');
-grid on;
+%subplot(2,1,2);
+%plot(time, control);
+%xlabel('Time (s)');
+%ylabel('Control Effort');
+%grid on;
