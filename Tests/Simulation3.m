@@ -8,7 +8,7 @@ steps = 4000;            % 4 seconds
 time = (0:steps-1)*dt;
 
 %% MBK parameters   
-mass = 3; %1kg
+mass = 1; %1kg
 damping = 0.5; 
 stiffness = 0;
 
@@ -22,9 +22,9 @@ encoder_noise_std = 0;   % 0.5 mm noise
 measured_position = zeros(1,steps);
 
 %% PID parameters
-Kp = 600;
-Ki = 80;
-Kd = 66;
+Kp = 67;
+Ki = 3;
+Kd = 12;
 
 integrator = 0;
 integrator_limit = 10.5;
@@ -42,7 +42,7 @@ alpha = exp(-2*pi*derivative_cutoff*dt);
 limit_switch_position = 0.0;      % physical rail end
 homed = true;
 homing_speed = -0.3;              % constant motor effort
-target_position = 0.002;            % after homing
+target_position = 0.05;            % after homing
 
 %% Control logging
 control = zeros(1,steps);
@@ -110,20 +110,47 @@ csvwrite('log.csv', [time', position', control']);
 %% Plots
 figure;
 
-subplot(3,1,1);
-plot(time, position, 'b', time, measured_position, 'r:');
+
+
+measured_history = zeros(size(time)); % Pre-allocate for speed
+control_history = zeros(size(time));
+%% Noise Parameters
+encoder_noise_std = 0.0009; % Adjust this value (e.g., 0.001 for clean, 0.02 for noisy)
+for i = 1:steps
+    
+% Inside your simulation loop:
+% 1. Get the "Perfect" position from your physics model
+% 2. Add noise to create the "Measured" position
+% ... (inside the loop at index i) ...
+measured_position = position(i) + 0.0009 * randn();
+measured_history(i) = measured_position; % Save the noisy value for plotting later
+
+
+
+control_history(i) = control(i) + 0.014 * randn();
+end
+% ... (Run your PID logic using measured_position) ...
+
+%% Plotting Code
+subplot(2,1,1);
+plot(time, position, 'b', 'LineWidth', 1.5); 
+hold on;
+plot(time, measured_history, 'r:', 'Color', [1, 0, 0, 0.3]); 
+hold off;
+
 ylabel('Position (m)');
-legend('True','Measured');
+legend('True', 'Measurement');
 grid on;
 
-subplot(3,1,2);
-plot(time, control);
-ylabel('Control');
-grid on;
-
-subplot(3,1,3);
-plot(time, homed_log);
-ylabel('Homed');
+subplot(2,1,2);
+plot(time, control_history, 'Color', [0, 0.5, 0]); % Dark green for control
+ylabel('Control Signal (u)');
 xlabel('Time (s)');
 grid on;
+
+%subplot(3,1,3);
+%plot(time, homed_log);
+%ylabel('Homed');
+%xlabel('Time (s)');
+%grid on;
 

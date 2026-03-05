@@ -8,8 +8,8 @@ steps = 2000;            % 4 seconds
 time = (0:steps-1)*dt;
 
 %% MBK parameters
-mass = 3;
-damping = 0.5;
+mass = 0.7;
+damping = 1.6;
 stiffness = 0;
 
 %% State variables
@@ -22,13 +22,13 @@ measured_position = zeros(1,steps);
 measured_velocity = zeros(1,steps);
 
 %% -------- Position loop (outer) --------
-Kp_pos = 5;            % position → velocity
+Kp_pos = 11;            % position → velocity
 max_velocity = 0.4;      % m/s limit
 
 %% -------- Velocity loop (inner PID) --------
-Kp_vel = 30;
-Ki_vel = 3;
-Kd_vel = 1;
+Kp_vel = 14;
+Ki_vel = 0.79;
+Kd_vel = 0.69;
 
 vel_integrator = 0;
 vel_integrator_limit = 1.5;
@@ -41,7 +41,7 @@ prev_velocity = 0;
 limit_switch_position = 0.0;
 homed = true;
 homing_speed = -0.25;
-target_position = 0.03;
+target_position = 0.05;
 
 %% Logs
 control = zeros(1,steps);

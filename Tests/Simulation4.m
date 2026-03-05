@@ -3,11 +3,11 @@ clear; clc;
 
 %% Simulation parameters
 dt = 0.001;
-steps = 3000;
+steps = 2000;
 time = (0:steps-1) * dt;
 
 %% Plant parameters (m, damping, stiffness)
-mass = 3.0;
+mass = 8.0;
 damping = 0.5;
 stiffness = 0.1;
 command_gain = 75;
@@ -22,9 +22,9 @@ control = zeros(1, steps);
 error_log = zeros(1, steps);
 
 %% PID parameters
-Kp = 3.2;
-Ki = 0.07;
-Kd = 0.5;
+Kp = 3.4;
+Ki = 0.1;
+Kd = 0.9;
 integrator = 0.0;
 integrator_limit = 50.0;
 prev_error = 0;
@@ -56,20 +56,22 @@ for i = 1:steps
 end
 
 %% Plot
-figure;
-subplot(3,1,1);
-plot(time, position, 'b', time, target_position * ones(size(time)), 'r--');
+figure;                 % default figure background is white
+
+subplot(2,1,1);
+plot(time, position, 'B', ...                         % Actual (red)
+     time, target_position * ones(size(time)), 'k--'); % Target (black dashed)
 ylabel('Position (m)');
 legend('Actual','Target');
 grid on;
 
-subplot(3,1,2);
-plot(time, control);
+subplot(4,1,3);
+plot(time, control, 'B');   % Command (red)
 ylabel('Command');
 grid on;
 
-subplot(3,1,3);
-plot(time, error_log);
+subplot(4,1,4);
+plot(time, error_log, 'B'); % Error (red)
 ylabel('Error (m)');
 xlabel('Time (s)');
 grid on;

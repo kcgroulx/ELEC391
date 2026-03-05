@@ -45,7 +45,7 @@ void song_player_homing(void)
     {
     }
 
-    // Stop motor and 
+    // Stop motor and set
     motor_control_setMotorSpeed(0.0f);
     motor_controller_encoderZeroPosition();
 }
