@@ -8,15 +8,16 @@
 /* Includes */
 #include "motor_control.h"
 
-/* Private Variables */
-motor_control_config_t motor_control_config;
+/* Private Defines */
+#define MOTOR_HALFBRIDGE1_HTIM (&htim2)
+#define MOTOR_HALFBRIDGE2_HTIM (&htim3)
+#define MOTOR_ENCODER_HTIM (&htim1)
+#define MOTOR_HALFBRIDGE1_CHANNEL TIM_CHANNEL_1
+#define MOTOR_HALFBRIDGE2_CHANNEL TIM_CHANNEL_1
 
+/* Private Variables */
 static int16_t enc_last_count = 0;
 static int32_t enc_position_counts = 0;
-
-/* Private Function Declarations */
-
-void motor_control_setPWMDutyCycle(TIM_HandleTypeDef* htim, uint32_t Channel, float dutyCycle);
 
 /* Private Function Definitions */
 
@@ -26,7 +27,7 @@ void motor_control_setPWMDutyCycle(TIM_HandleTypeDef* htim, uint32_t Channel, fl
  * @param Channel TIM channel to update.
  * @param dutyCycle Percent duty cycle; values >1.0 are clamped to 1.0.
  */
-void motor_control_setPWMDutyCycle(TIM_HandleTypeDef* htim, uint32_t Channel, float dutyCycle)
+static void motor_control_setPWMDutyCycle(TIM_HandleTypeDef* htim, uint32_t Channel, float dutyCycle)
 {
     // Ensure that dutyCycle is < 100
     dutyCycle = (dutyCycle > 1.0) ? 1.0 : dutyCycle;
@@ -46,15 +47,12 @@ void motor_control_setPWMDutyCycle(TIM_HandleTypeDef* htim, uint32_t Channel, fl
 
 /**
  * @brief Initialize the two half-bridge PWM channels used by the motor driver.
- * @param config Struct that contains the htims for the halfbridge PWMs and encoder
  */
-void motor_control_init(motor_control_config_t* config)
+void motor_control_init(void)
 {
-    motor_control_config = *config;
-
-    HAL_TIM_PWM_Start(motor_control_config.halfBridge1Htim, motor_control_config.halfBridge1Channel);
-    HAL_TIM_PWM_Start(motor_control_config.halfBridge2Htim, motor_control_config.halfBridge2Channel);
-    HAL_TIM_Encoder_Start(motor_control_config.encoderHtim, TIM_CHANNEL_ALL);
+    HAL_TIM_PWM_Start(MOTOR_HALFBRIDGE1_HTIM, MOTOR_HALFBRIDGE1_CHANNEL);
+    HAL_TIM_PWM_Start(MOTOR_HALFBRIDGE2_HTIM, MOTOR_HALFBRIDGE2_CHANNEL);
+    HAL_TIM_Encoder_Start(MOTOR_ENCODER_HTIM, TIM_CHANNEL_ALL);
 
     motor_control_setMotorSpeed(0.0);
 }
@@ -68,18 +66,18 @@ void motor_control_setMotorSpeed(float speed)
 {
     if(speed > 0)
     {
-        motor_control_setPWMDutyCycle(motor_control_config.halfBridge1Htim, motor_control_config.halfBridge1Channel, fabs(speed));
-        motor_control_setPWMDutyCycle(motor_control_config.halfBridge2Htim, motor_control_config.halfBridge2Channel, 0);
+        motor_control_setPWMDutyCycle(MOTOR_HALFBRIDGE1_HTIM, MOTOR_HALFBRIDGE1_CHANNEL, fabs(speed));
+        motor_control_setPWMDutyCycle(MOTOR_HALFBRIDGE2_HTIM, MOTOR_HALFBRIDGE2_CHANNEL, 0);
     }
     else if (speed < 0)
     {
-        motor_control_setPWMDutyCycle(motor_control_config.halfBridge1Htim, motor_control_config.halfBridge1Channel, 0);
-        motor_control_setPWMDutyCycle(motor_control_config.halfBridge2Htim, motor_control_config.halfBridge2Channel, fabs(speed));
+        motor_control_setPWMDutyCycle(MOTOR_HALFBRIDGE1_HTIM, MOTOR_HALFBRIDGE1_CHANNEL, 0);
+        motor_control_setPWMDutyCycle(MOTOR_HALFBRIDGE2_HTIM, MOTOR_HALFBRIDGE2_CHANNEL, fabs(speed));
     }
     else
     {
-        motor_control_setPWMDutyCycle(motor_control_config.halfBridge1Htim, motor_control_config.halfBridge1Channel, 0);
-        motor_control_setPWMDutyCycle(motor_control_config.halfBridge2Htim, motor_control_config.halfBridge2Channel, 0);
+        motor_control_setPWMDutyCycle(MOTOR_HALFBRIDGE1_HTIM, MOTOR_HALFBRIDGE1_CHANNEL, 0);
+        motor_control_setPWMDutyCycle(MOTOR_HALFBRIDGE2_HTIM, MOTOR_HALFBRIDGE2_CHANNEL, 0);
     }   
 }
 
@@ -89,7 +87,7 @@ void motor_control_setMotorSpeed(float speed)
  */
 void motor_controller_encoderUpdatePosition(void)
 {
-    int16_t enc_current_count = (int16_t)__HAL_TIM_GET_COUNTER(motor_control_config.encoderHtim);
+    int16_t enc_current_count = (int16_t)__HAL_TIM_GET_COUNTER(MOTOR_ENCODER_HTIM);
 
     int16_t enc_delta_count = (int16_t)(enc_current_count - enc_last_count);
 
@@ -104,16 +102,24 @@ void motor_controller_encoderUpdatePosition(void)
  */
 float motor_controller_encoderGetAngleDeg(void)
 {
-    return ((float)enc_position_counts / ENCODER_CPR_OUTPUT) * 360.0f; // TODO: check why we need * 2.0
+    return ((float)enc_position_counts / ENCODER_CPR_OUTPUT) * 360.0f;
 
 }
 
 /**
- * @brief Get accumulated encoder position counts.
- * @return Signed position counts since startup/reset.
+ * @brief Get the current linear position from the encoder angle.
+ * @return Linear position in the same units as LINEAR_TRAVEL_PER_REV.
  */
-int32_t motor_controller_encoderGetPositionCounts(void)
+float motor_controller_encoderGetLinearPosition(void)
 {
-    return enc_position_counts;
+    return (motor_controller_encoderGetAngleDeg() / 360.0f) * LINEAR_TRAVEL_PER_REV;
+}
+
+/**
+ * @brief Reset the accumulated encoder position count to zero.
+ */
+void motor_controller_encoderZeroPosition(void)
+{
+    enc_position_counts = 0;
 }
 

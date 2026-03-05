@@ -101,14 +101,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
 
   // Initialize motor controller
-  static motor_control_config_t motor_control_config = {
-    .halfBridge1Htim = &htim2,
-    .halfBridge2Htim = &htim3,
-    .encoderHtim = &htim1,
-    .halfBridge1Channel = TIM_CHANNEL_1,
-    .halfBridge2Channel = TIM_CHANNEL_1
-  };
-  motor_control_init(&motor_control_config);
+  motor_control_init();
 
   HAL_ADCEx_Calibration_Start(&hadc1);
   HAL_ADC_Start(&hadc1);
@@ -119,12 +112,10 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  float motor_speed = 0.5;
+//  float motor_speed = 0.5;
   while (1)
   { 
-	motor_speed = motor_speed * -1;
-    motor_control_setMotorSpeed(motor_speed);
-    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_4);
+    HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_0);
     HAL_Delay(1000);
     /* USER CODE END WHILE */
 
