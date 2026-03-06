@@ -8,6 +8,7 @@
 
 /* Includes */
 #include <stdbool.h>
+#include <stdint.h>
 
 /* Defines */
 
@@ -16,7 +17,7 @@ typedef struct {
    float targetPosition;
    uint8_t fingerBitmask;
    uint16_t pressDuration;
-   Uint16_t noteDurantion
+   uint16_t noteDurantion;
 } song_state_t;
 
 typedef struct {
