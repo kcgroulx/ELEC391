@@ -251,6 +251,44 @@ void TIM4_IRQHandler(void)
 
   // motor_control_setMotorSpeed(motor_command);
 
+ /*  void TIM4_IRQHandler(void)
+ *   {
+ *       HAL_TIM_IRQHandler(&htim4);
+ *
+ *       // USER CODE BEGIN TIM4_IRQn 1
+ *
+ *       motor_controller_encoderUpdatePosition();
+ *       actual_angle = motor_controller_encoderGetAngleDeg();
+ *
+ *       // --- REMOVED: test target_sequence_deg block ---
+ *       // target_angle is now set by hal_motorSetTarget() from main loop.
+ *
+ *       static uint16_t settled_ticks = 0;
+ *       const float     reach_tolerance_deg  = 3.0f;
+ *       const uint16_t  settled_ticks_required = 100;
+ *
+ *       float angle_error     = target_angle - actual_angle;
+ *       float abs_angle_error = (angle_error < 0.0f) ? -angle_error : angle_error;
+ *
+ *       if (abs_angle_error <= reach_tolerance_deg)
+ *       {
+ *           if (++settled_ticks >= settled_ticks_required)
+ *           {
+ *               settled_ticks = 0;
+ *               hal_motorNotifyArrived();   // <-- ADD THIS LINE
+ *           }
+ *       }
+ *       else
+ *       {
+ *           settled_ticks = 0;
+ *       }
+ *
+ *       motor_command = cascaded_control_step(target_angle);
+ *       motor_control_setMotorSpeed(motor_command);  // <-- uncomment this too
+ *
+ *       // USER CODE END TIM4_IRQn 1
+ *   }
+ */
   /* USER CODE END TIM4_IRQn 1 */
 }
 
