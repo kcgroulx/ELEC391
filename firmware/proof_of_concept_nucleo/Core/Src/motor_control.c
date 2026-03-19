@@ -9,11 +9,11 @@
 #include "motor_control.h"
 
 /* Private Defines */
-#define MOTOR_HALFBRIDGE1_HTIM (&htim2)
+#define MOTOR_HALFBRIDGE1_HTIM (&htim3)
 #define MOTOR_HALFBRIDGE2_HTIM (&htim3)
 #define MOTOR_ENCODER_HTIM (&htim1)
-#define MOTOR_HALFBRIDGE1_CHANNEL TIM_CHANNEL_1
-#define MOTOR_HALFBRIDGE2_CHANNEL TIM_CHANNEL_1
+#define MOTOR_HALFBRIDGE1_CHANNEL TIM_CHANNEL_2
+#define MOTOR_HALFBRIDGE2_CHANNEL TIM_CHANNEL_3
 
 /* Private Variables */
 static int16_t enc_last_count = 0;
@@ -112,7 +112,7 @@ float motor_controller_encoderGetAngleDeg(void)
  */
 float motor_controller_encoderGetLinearPosition(void)
 {
-    return (motor_controller_encoderGetAngleDeg() / 360.0f) * LINEAR_TRAVEL_PER_REV;
+    return motor_controller_encoderGetAngleDeg() * ANGLE_DEG_TO_POSITION_SCALE;
 }
 
 /**
@@ -122,4 +122,3 @@ void motor_controller_encoderZeroPosition(void)
 {
     enc_position_counts = 0;
 }
-

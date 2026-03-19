@@ -1,11 +1,11 @@
 /**
  * @file pid.h
- * @brief Public interface for PID-based motor angle control.
+ * @brief Public interface for PID-based motor position control.
  */
 #ifndef SRC_PID_H_
 #define SRC_PID_H_
 
-float cascaded_control_step(float target_angle_deg);
+float cascaded_control_step(float target_position);
 
 
 /* Public Function Declarations */

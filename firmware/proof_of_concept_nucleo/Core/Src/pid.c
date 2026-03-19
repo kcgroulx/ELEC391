@@ -1,6 +1,6 @@
 /**
  * @file pid.c
- * @brief PID controller for motor angle control.
+ * @brief PID controller for motor position control.
  */
 
 #include "motor_control.h"
@@ -41,8 +41,9 @@ static inline float clampf(float x, float lo, float hi)
  * Kept function name for compatibility with existing call sites. :))
  * This is a single-loop position PID, not a cascaded controller!!!!
  */
-float cascaded_control_step(float target_angle_deg)
+float cascaded_control_step(float target_position)
 {
+    float target_angle_deg = target_position * POSITION_TO_ANGLE_DEG_SCALE;
     float angle = motor_controller_encoderGetAngleDeg();
     float error = target_angle_deg - angle;
     float abs_error = (error < 0.0f) ? -error : error;

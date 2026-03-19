@@ -23,7 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "motor_control.h"
-#include "pid.h"
+#include "song_player.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -33,8 +33,6 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define TARGET_ANGLE_MAX_DEG 360.0f
-#define ADC_MAX_COUNTS       4095.0f
 
 /* USER CODE END PD */
 
@@ -45,9 +43,6 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
-float target_angle = 90.0f;
-float actual_angle;
-float motor_command;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -216,40 +211,7 @@ void TIM4_IRQHandler(void)
   /* USER CODE BEGIN TIM4_IRQn 1 */
 
   motor_controller_encoderUpdatePosition();
-  actual_angle = motor_controller_encoderGetAngleDeg();
-
-  // target_angle = ((float)HAL_ADC_GetValue(&hadc1) / ADC_MAX_COUNTS) * TARGET_ANGLE_MAX_DEG;
-  static const float target_sequence_deg[] = {0.0f, 180.0f, -180.0f, 360.0f};
-  static uint32_t target_index = 0;
-  static uint16_t settled_ticks = 0;
-  const float reach_tolerance_deg = 3.0f;
-  const uint16_t settled_ticks_required = 100; // ~100 ms at 1 kHz TIM4
-
-  target_angle = target_sequence_deg[target_index];
-
-  float angle_error = target_angle - actual_angle;
-  float abs_angle_error = (angle_error < 0.0f) ? -angle_error : angle_error;
-
-  if (abs_angle_error <= reach_tolerance_deg)
-  {
-    if (++settled_ticks >= settled_ticks_required)
-    {
-      settled_ticks = 0;
-      target_index++;
-      if (target_index >= (sizeof(target_sequence_deg) / sizeof(target_sequence_deg[0])))
-      {
-        target_index = 0;
-      }
-    }
-  }
-  else
-  {
-    settled_ticks = 0;
-  }
-
-  motor_command = cascaded_control_step(target_angle);
-
-  // motor_control_setMotorSpeed(motor_command);
+  song_player_step();
 
  /*  void TIM4_IRQHandler(void)
  *   {
