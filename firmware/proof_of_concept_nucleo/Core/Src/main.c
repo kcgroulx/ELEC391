@@ -26,7 +26,8 @@
 /* USER CODE BEGIN Includes */
 
 #include "motor_control.h"
-#include "pid.h"
+#include "song_happy_birthday.h"
+#include "song_player.h"
 
 /* USER CODE END Includes */
 
@@ -100,6 +101,7 @@ int main(void)
 
   // Initialize motor controller
   motor_control_init();
+  song_player_init(&happy_birthday_c_major_song);
 
   HAL_TIM_Base_Start_IT(&htim4);
 
@@ -107,11 +109,8 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-//  float motor_speed = 0.5;
   while (1)
   { 
-    HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_0);
-    HAL_Delay(1000);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

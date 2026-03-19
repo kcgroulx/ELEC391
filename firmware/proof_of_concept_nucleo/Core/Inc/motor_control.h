@@ -16,20 +16,15 @@
 #define GEAR_RATIO 30.0f
 #define ENCODER_CPR_OUTPUT (ENCODER_CPR_MOTOR * GEAR_RATIO)
 #define LINEAR_TRAVEL_PER_REV 1.0f /* TODO: replace with the actual linear travel per output revolution. */
+#define POSITION_TO_ANGLE_DEG_SCALE (360.0f / LINEAR_TRAVEL_PER_REV)
+#define ANGLE_DEG_TO_POSITION_SCALE (LINEAR_TRAVEL_PER_REV / 360.0f)
 
 /* Public Function Declarations */
 void motor_control_init(void);
 void motor_control_setMotorSpeed(float speed);
 void motor_controller_encoderUpdatePosition(void);
 float motor_controller_encoderGetAngleDeg(void);
-/**
- * @brief Get the current linear position from the encoder angle.
- * @return Linear position in the same units as LINEAR_TRAVEL_PER_REV.
- */
 float motor_controller_encoderGetLinearPosition(void);
-/**
- * @brief Reset the accumulated encoder position count to zero.
- */
 void motor_controller_encoderZeroPosition(void);
 
 #endif /* SRC_MOTOR_CONTROL_H_ */
