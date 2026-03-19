@@ -9,6 +9,39 @@
 #include "song_player.h"
 #include "main.h"
 #include "motor_control.h"
+#include "note_player.h"
+#include "piano_keymap.h"
+#include "stdio.h"
+#include "string.h"
+#include "usart.h"
+
+void test_printKeyMap(void) {
+    char buf[80];
+    uint8_t i, j;
+    for (i = 0; i < KEY_MAP_SIZE; i++) {
+        const PianoKey* k = &KEY_MAP[i];
+        for (j = 0; j < MAX_FINGER_OPTIONS; j++) {
+            const FingerOption* o = &k->options[j];
+            if (!o->valid) continue;
+            snprintf(buf, sizeof(buf), "%s  finger=%s  pos=%.1fmm\r\n",
+                k->name, fingerName(o->finger), o->motorPositionMM);
+            HAL_UART_Transmit(&huart2, (uint8_t*)buf, strlen(buf), 100);
+        }
+    }
+}
+
+// C major scale
+NoteEvent scale[] = {
+    {60, 400, 50},  /* C4 */
+    {62, 400, 50},  /* D4 */
+    {64, 400, 50},  /* E4 */
+    {65, 400, 50},  /* F4 */
+    {67, 400, 50},  /* G4 */
+};
+
+void test_playScale(void) {
+    NotePlayer_playSequence(scale, 5);
+}
 
 /* Private Defines */
 #define SONG_PLAYER_HOMING_SPEED 0.2f
