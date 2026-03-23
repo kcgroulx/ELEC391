@@ -24,6 +24,7 @@
 /* USER CODE BEGIN Includes */
 #include "motor_control.h"
 #include "pid.h"
+#include "hal_interface.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -218,6 +219,33 @@ void TIM4_IRQHandler(void)
   motor_controller_encoderUpdatePosition();
   actual_angle = motor_controller_encoderGetAngleDeg();
 
+  static uint16_t settled_ticks = 0;
+  const float     reach_tolerance_deg    = 3.0f;
+  const uint16_t  settled_ticks_required = 100;
+
+  float angle_error     = target_angle - actual_angle;
+  float abs_angle_error = (angle_error < 0.0f) ? -angle_error : angle_error;
+
+  if (abs_angle_error <= reach_tolerance_deg)
+  {
+      if (++settled_ticks >= settled_ticks_required)
+    {
+        settled_ticks = 0;
+        hal_motorNotifyArrived();   // ← this is the key line
+    }
+  }
+  else
+  {
+    settled_ticks = 0;
+  }
+
+  motor_command = cascaded_control_step(target_angle);
+  motor_control_setMotorSpeed(motor_command);  
+
+
+ /* motor_controller_encoderUpdatePosition();
+  actual_angle = motor_controller_encoderGetAngleDeg();
+
   // target_angle = ((float)HAL_ADC_GetValue(&hadc1) / ADC_MAX_COUNTS) * TARGET_ANGLE_MAX_DEG;
   static const float target_sequence_deg[] = {0.0f, 180.0f, -180.0f, 360.0f};
   static uint32_t target_index = 0;
@@ -247,7 +275,7 @@ void TIM4_IRQHandler(void)
     settled_ticks = 0;
   }
 
-  motor_command = cascaded_control_step(target_angle);
+  motor_command = cascaded_control_step(target_angle);  */
 
   // motor_control_setMotorSpeed(motor_command);
 

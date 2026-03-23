@@ -70,7 +70,7 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-	test_printKeyMap();
+	
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -98,10 +98,11 @@ int main(void)
   MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
 
-  // Initialize motor controller
   motor_control_init();
-
   HAL_TIM_Base_Start_IT(&htim4);
+
+  test_printKeyMap();   // prints key map over UART — confirms comms working
+  test_playScale();     // moves motor through C major scale
 
   /* USER CODE END 2 */
 

@@ -11,13 +11,15 @@
 #include <stdint.h>
 
 /* Defines */
+void test_printKeyMap(void);
+void test_playScale(void);
 
 /* Typedefs */
 typedef struct {
    float targetPosition;
    uint8_t fingerBitmask;
    uint16_t pressDuration;
-   uint16_t noteDurantion;
+   uint16_t noteDuration;
 } song_state_t;
 
 typedef struct {
