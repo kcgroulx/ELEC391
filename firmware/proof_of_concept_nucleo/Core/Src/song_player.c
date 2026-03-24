@@ -27,7 +27,7 @@ void SongPlayer_run(void) {
     if (result.status == MIDI_OK)
         NotePlayer_playSequence(events, result.noteCount);
 }
-```
+
 /* Testing Instructions:
 Then from your PC: 
 pip install pyserial
@@ -36,9 +36,9 @@ python send_midi.py twinkle.mid --port COM5
 
 // Paste your MIDI file bytes here — get them by running:
 // python -c "d=open('song.mid','rb').read(); print(','.join(f'0x{b:02X}' for b in d))"
-static const uint8_t MY_SONG[] = { 0x4D,0x54,0x68,0x64, ... };
+//static const uint8_t MY_SONG[] = { 0x4D,0x54,0x68,0x64, ... };
 
-Midi_parseBuffer(MY_SONG, sizeof(MY_SONG), events, MIDI_MAX_NOTES, &result);
+//Midi_parseBuffer(MY_SONG, sizeof(MY_SONG), events, MIDI_MAX_NOTES, &result);
 
 // C major scale for testing purposes — replace with actual songs later.
 NoteEvent scale[] = {

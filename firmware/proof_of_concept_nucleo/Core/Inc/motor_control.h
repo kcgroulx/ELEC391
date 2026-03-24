@@ -15,7 +15,7 @@
 #define ENCODER_CPR_MOTOR 64.0f
 #define GEAR_RATIO 30.0f
 #define ENCODER_CPR_OUTPUT (ENCODER_CPR_MOTOR * GEAR_RATIO)
-#define LINEAR_TRAVEL_PER_REV 1.0f /* TODO: replace with the actual linear travel per output revolution. */
+#define LINEAR_TRAVEL_PER_REV 37.7f // 2*pi*radius, radius = 6mm pulley  // CONFIRM THIS MEASUREMENT
 
 /* Public Function Declarations */
 void motor_control_init(void);
