@@ -34,10 +34,10 @@ extern "C" {
  * Hardware geometry — EDIT THESE
  * -------------------------------------------------------------------------- */
 
-#define WHITE_KEY_WIDTH_MM   21.0f   /* white key center-to-center (mm)     MEASURED BY ALEX - 2.1cm */ 
+#define WHITE_KEY_WIDTH_MM   23.5f   /* white key center-to-center (mm)   looks to be around 23.5mm */ 
 #define MOTOR_ORIGIN_MM       0.0f   /* encoder zero = W1 over C2            */
-#define MOTOR_MIN_MM          0.0f   /* left travel limit                     */
-#define MOTOR_MAX_MM        441.0f   /* 21 white keys x 21mm (C2–C5)       */
+#define MOTOR_MIN_MM          0.0f   /* left travel limit                    */
+#define MOTOR_MAX_MM        494.0f   /* 21 white keys x 23.5mm (C2–C5)       */
 #define FINGER_SPACING_MM   WHITE_KEY_WIDTH_MM  /* white-to-black finger gap */ //MAYBE UPDATE THIS ?!
 
 #define KEY_MAP_SIZE        37U      /* C2 (midi 36) to C5 (midi 72)         */
