@@ -9,6 +9,65 @@
 #include "song_player.h"
 #include "main.h"
 #include "motor_control.h"
+#include "note_player.h"
+#include "piano_keymap.h"
+#include <stdio.h>
+#include <string.h>
+#include "usart.h"
+#include "midi_parser.h"
+
+static uint8_t   uartBuf[MIDI_UART_BUF_SIZE];
+static NoteEvent events[MIDI_MAX_NOTES];
+
+/* Public Function Definitions */
+void SongPlayer_run(void) {
+    MidiParseResult result;
+    Midi_receiveAndParse(uartBuf, sizeof(uartBuf), events, MIDI_MAX_NOTES, &result);
+    Midi_printResult(&result);   // prints stats over UART
+    if (result.status == MIDI_OK)
+        NotePlayer_playSequence(events, result.noteCount);
+}
+
+/* Testing Instructions:
+Then from your PC: 
+pip install pyserial
+python send_midi.py twinkle.mid --port COM5
+*/
+
+// Paste your MIDI file bytes here — get them by running:
+// python -c "d=open('song.mid','rb').read(); print(','.join(f'0x{b:02X}' for b in d))"
+//static const uint8_t MY_SONG[] = { 0x4D,0x54,0x68,0x64, ... };
+
+//Midi_parseBuffer(MY_SONG, sizeof(MY_SONG), events, MIDI_MAX_NOTES, &result);
+
+// C major scale for testing purposes — replace with actual songs later.
+NoteEvent scale[] = {
+    {60, 400, 50},  /* C4 */
+    {62, 400, 50},  /* D4 */
+    {64, 400, 50},  /* E4 */
+    {65, 400, 50},  /* F4 */
+    {67, 400, 50},  /* G4 */
+};
+
+void test_playScale(void) {
+    NotePlayer_playSequence(scale, 5);
+}
+
+// For testing: prints the key map over UART to confirm comms working and key map is correct.
+void test_printKeyMap(void) {
+    char buf[80];
+    uint8_t i, j;
+    for (i = 0; i < KEY_MAP_SIZE; i++) {
+        const PianoKey* k = &KEY_MAP[i];
+        for (j = 0; j < MAX_FINGER_OPTIONS; j++) {
+            const FingerOption* o = &k->options[j];
+            if (!o->valid) continue;
+            snprintf(buf, sizeof(buf), "%s  finger=%s  pos=%.1fmm\r\n",
+                k->name, fingerName(o->finger), o->motorPositionMM);
+            HAL_UART_Transmit(&huart2, (uint8_t*)buf, strlen(buf), 100);
+        }
+    }
+}
 
 /* Private Defines */
 #define SONG_PLAYER_HOMING_SPEED 0.2f

@@ -55,7 +55,7 @@ float cascaded_control_step(float target_angle_deg)
     if (abs_error <= deadband_deg)
     {
         integrator = 0.0f;
-        prev_command = 0.0f;
+        prev_command = 0.0f; 
         return 0.0f;
     }
 
