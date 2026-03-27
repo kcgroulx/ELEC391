@@ -2,7 +2,7 @@
 """
 send_midi.py
 ============
-Sends a MIDI file to the STM32 piano robot over UART.
+Sends a MIDI file to the ESP32 piano robot over UART.
 
 USAGE:
     python send_midi.py mysong.mid
@@ -12,7 +12,7 @@ USAGE:
 
 PROTOCOL:
     Sends a 4-byte big-endian file length, then the raw MIDI bytes.
-    The STM32 Midi_receiveUART() function expects exactly this format.
+    The ESP32 Midi_receiveUART() function expects exactly this format.
 
 REQUIREMENTS:
     pip install pyserial
@@ -26,12 +26,12 @@ import sys
 import time
 
 
-def find_stm32_port():
-    """Try to auto-detect the STM32 UART port."""
+def find_esp32_port():
+    """Try to auto-detect the ESP32 UART port."""
     ports = list(serial.tools.list_ports.comports())
     for p in ports:
         desc = (p.description or "").lower()
-        if any(x in desc for x in ["stm32", "st-link", "usb serial", "uart"]):
+        if any(x in desc for x in ["esp32", "cp210", "usb serial", "uart"]):
             return p.device
     # Fall back to first available port
     if ports:
@@ -83,18 +83,18 @@ def send_midi(midi_path: str, port: str, baud: int) -> bool:
     ser.flush()
     print(f"\nDone — sent {sent} bytes")
 
-    # Optional: read back any response from the STM32 (debug UART output)
+    # Optional: read back any response from the ESP32 (debug UART output)
     time.sleep(0.5)
     if ser.in_waiting:
         response = ser.read(ser.in_waiting).decode("utf-8", errors="replace")
-        print(f"\nSTM32 response:\n{response}")
+        print(f"\nESP32 response:\n{response}")
 
     ser.close()
     return True
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Send MIDI file to STM32 piano robot")
+    parser = argparse.ArgumentParser(description="Send MIDI file to ESP32 piano robot")
     parser.add_argument("midi_file", help="Path to .mid file")
     parser.add_argument("--port",  default=None,    help="Serial port (auto-detected if omitted)")
     parser.add_argument("--baud",  default=115200,  type=int, help="Baud rate (default 115200)")
@@ -102,7 +102,7 @@ def main():
 
     port = args.port
     if port is None:
-        port = find_stm32_port()
+        port = find_esp32_port()
         if port is None:
             print("Error: no serial port found. Specify with --port COM5 or --port /dev/ttyUSB0")
             sys.exit(1)
