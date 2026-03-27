@@ -39,8 +39,13 @@
 #define ENCODER_PIN_B       35      /* Encoder channel B                     */
 
 /* LEDC PWM config */
-#define MOTOR_PWM1_CH       0       /* LEDC channel for PWM1 (0–15)          */
-#define MOTOR_PWM2_CH       1       /* LEDC channel for PWM2                 */
+/* NOTE: In ESP32 Arduino core v3.x, ledcSetup/ledcAttachPin are replaced by
+ * ledcAttach(pin, freq, bits). Channel numbers are assigned automatically by
+ * the driver. MOTOR_PWM1_CH / MOTOR_PWM2_CH are kept here for reference only
+ * but are no longer passed to any LEDC function. ledcWrite() now takes the
+ * pin number, not the channel number. */
+#define MOTOR_PWM1_CH       0       /* legacy — not used in v3.x             */
+#define MOTOR_PWM2_CH       1       /* legacy — not used in v3.x             */
 #define MOTOR_PWM_FREQ      20000   /* 20 kHz — above audible range          */
 #define MOTOR_PWM_RES_BITS  8       /* 8-bit resolution → duty 0–255         */
 #define MOTOR_PWM_MAX_DUTY  255U

@@ -34,9 +34,9 @@ static float mm_to_deg(float mm)
 }
 
 /* --------------------------------------------------------------------------
- * hal_init
+ * piano_hal_init
  * -------------------------------------------------------------------------- */
-void hal_init(void)
+void piano_hal_init(void)
 {
     s_targetDeg    = 0.0f;
     s_motorArrived = 1;   /* start as arrived so first move triggers cleanly */

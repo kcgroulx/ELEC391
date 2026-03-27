@@ -44,7 +44,7 @@ extern "C" {
 /* --------------------------------------------------------------------------
  * Initialisation — call once in setup()
  * -------------------------------------------------------------------------- */
-void hal_init(void);
+void piano_hal_init(void);
 
 /* Called from the 1 kHz timer ISR — runs PID and sets motor speed. */
 void hal_pidStep(void);

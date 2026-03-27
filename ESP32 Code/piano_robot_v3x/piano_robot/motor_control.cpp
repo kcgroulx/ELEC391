@@ -9,6 +9,10 @@
  *   __HAL_TIM_GET_COUNTER()     → volatile counter incremented in ISR
  *   __HAL_TIM_SET_COMPARE()     → ledcWrite()
  *
+ * ESP32 Arduino core v3.x LEDC changes:
+ *   ledcSetup() + ledcAttachPin()  →  ledcAttach(pin, freq, bits)
+ *   ledcWrite(channel, duty)       →  ledcWrite(pin, duty)
+ *
  * QUADRATURE DECODING:
  *   Both encoder pins trigger an interrupt on CHANGE.
  *   On each edge, we read both pins to determine direction:
@@ -52,11 +56,12 @@ static void IRAM_ATTR encoderISR(void)
  * -------------------------------------------------------------------------- */
 void motor_control_init(void)
 {
-    /* Set up LEDC PWM for both half-bridge channels */
-    ledcSetup(MOTOR_PWM1_CH, MOTOR_PWM_FREQ, MOTOR_PWM_RES_BITS);
-    ledcSetup(MOTOR_PWM2_CH, MOTOR_PWM_FREQ, MOTOR_PWM_RES_BITS);
-    ledcAttachPin(MOTOR_PWM1_PIN, MOTOR_PWM1_CH);
-    ledcAttachPin(MOTOR_PWM2_PIN, MOTOR_PWM2_CH);
+    /* Set up LEDC PWM for both half-bridge channels.
+     * ESP32 Arduino core v3.x merged ledcSetup + ledcAttachPin into a single
+     * ledcAttach(pin, freq, resolution_bits) call. Channel assignment is now
+     * automatic — use the pin number (not a channel number) in ledcWrite(). */
+    ledcAttach(MOTOR_PWM1_PIN, MOTOR_PWM_FREQ, MOTOR_PWM_RES_BITS);
+    ledcAttach(MOTOR_PWM2_PIN, MOTOR_PWM_FREQ, MOTOR_PWM_RES_BITS);
 
     /* Start with motor stopped */
     motor_control_setMotorSpeed(0.0f);
@@ -86,14 +91,14 @@ void motor_control_setMotorSpeed(float speed)
     uint8_t duty = (uint8_t)(fabsf(speed) * (float)MOTOR_PWM_MAX_DUTY);
 
     if (speed > 0.0f) {
-        ledcWrite(MOTOR_PWM1_CH, duty);
-        ledcWrite(MOTOR_PWM2_CH, 0);
+        ledcWrite(MOTOR_PWM1_PIN, duty);
+        ledcWrite(MOTOR_PWM2_PIN, 0);
     } else if (speed < 0.0f) {
-        ledcWrite(MOTOR_PWM1_CH, 0);
-        ledcWrite(MOTOR_PWM2_CH, duty);
+        ledcWrite(MOTOR_PWM1_PIN, 0);
+        ledcWrite(MOTOR_PWM2_PIN, duty);
     } else {
-        ledcWrite(MOTOR_PWM1_CH, 0);
-        ledcWrite(MOTOR_PWM2_CH, 0);
+        ledcWrite(MOTOR_PWM1_PIN, 0);
+        ledcWrite(MOTOR_PWM2_PIN, 0);
     }
 }
 

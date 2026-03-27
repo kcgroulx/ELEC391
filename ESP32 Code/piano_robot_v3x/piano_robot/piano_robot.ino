@@ -47,18 +47,19 @@ void setup(void)
     motor_control_init();
 
     /* Initialise HAL (clears arrived flag, etc.) */
-    hal_init();
+    piano_hal_init();
 
     /* Start 1 kHz PID timer
-     *   timerBegin(unit, prescaler, countUp)
-     *   ESP32 base clock = 80 MHz
-     *   prescaler = 80 → timer ticks at 1 MHz
-     *   alarm at 1000 ticks → fires every 1 ms = 1 kHz
+     *   ESP32 Arduino core v3.x API:
+     *   timerBegin(frequency_hz) — sets timer tick frequency directly.
+     *   1 000 000 Hz → 1 µs per tick.
+     *   timerAlarm(timer, ticks, autoreload, reload_count)
+     *   alarm at 1000 ticks → fires every 1 ms = 1 kHz.
+     *   timerAttachInterrupt no longer takes an edge argument.
      */
-    g_pidTimer = timerBegin(0, 80, true);
-    timerAttachInterrupt(g_pidTimer, &onPIDTimer, true);
-    timerAlarmWrite(g_pidTimer, 1000, true);
-    timerAlarmEnable(g_pidTimer);
+    g_pidTimer = timerBegin(1000000);          /* 1 MHz tick rate            */
+    timerAttachInterrupt(g_pidTimer, &onPIDTimer);
+    timerAlarm(g_pidTimer, 1000, true, 0);     /* 1000 µs = 1 kHz, autoreload */
 
     Serial.println("Hardware initialised. Running homing sequence...");
     song_player_homing();
