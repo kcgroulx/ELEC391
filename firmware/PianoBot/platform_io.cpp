@@ -26,16 +26,16 @@ pcnt_channel_handle_t encoderChannelB = nullptr;
 constexpr pcnt_unit_t encoderUnit = PCNT_UNIT_0;
 #endif
 
-uint32_t pwm_max_duty(void)
+uint32_t pwm_max_duty(uint8_t resolutionBits)
 {
-    return (1UL << app_config::motor_pwm_resolution_bits) - 1UL;
+    return (1UL << resolutionBits) - 1UL;
 }
 
-void write_pwm_pin(uint8_t pin, float duty)
+void write_pwm_pin(uint8_t pin, float duty, bool activeLow, uint8_t resolutionBits)
 {
     const float clampedDuty = constrain(duty, 0.0f, 1.0f);
-    const float physicalDuty = app_config::motor_pwm_active_low ? (1.0f - clampedDuty) : clampedDuty;
-    const uint32_t dutyCounts = static_cast<uint32_t>(physicalDuty * static_cast<float>(pwm_max_duty()));
+    const float physicalDuty = activeLow ? (1.0f - clampedDuty) : clampedDuty;
+    const uint32_t dutyCounts = static_cast<uint32_t>(physicalDuty * static_cast<float>(pwm_max_duty(resolutionBits)));
     ledcWrite(pin, dutyCounts);
 }
 
@@ -157,8 +157,16 @@ void platform_io_init(void)
 
 void platform_io_set_motor_pwm(float forwardDuty, float reverseDuty)
 {
-    write_pwm_pin(app_config::motor_pwm_forward_pin, forwardDuty);
-    write_pwm_pin(app_config::motor_pwm_reverse_pin, reverseDuty);
+    write_pwm_pin(
+        app_config::motor_pwm_forward_pin,
+        forwardDuty,
+        app_config::motor_pwm_active_low,
+        app_config::motor_pwm_resolution_bits);
+    write_pwm_pin(
+        app_config::motor_pwm_reverse_pin,
+        reverseDuty,
+        app_config::motor_pwm_active_low,
+        app_config::motor_pwm_resolution_bits);
 }
 
 int32_t platform_io_get_encoder_count(void)

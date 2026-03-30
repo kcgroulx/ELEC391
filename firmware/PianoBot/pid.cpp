@@ -9,19 +9,18 @@ namespace
 {
 constexpr float dt = static_cast<float>(app_config::control_period_us) / 1000000.0f;
 
-float kp = 0.0310f;
-float ki = 0.0008f;
-float kd = 0.002f;
+float kp = 0.005f;
+float ki = 0.0f;
+float kd = 0.000005f;
 
 float outputLimit = 1.0f;
-float deadbandDeg = 2.0f;
-float settleVelocityDegPerSec = 8.0f;
+float deadbandDeg = 8.0f;
+float settleVelocityDegPerSec = 1000.0f;
 float nearTargetBandDeg = 12.0f;
 float nearTargetOutputLimit = 0.25f;
 float breakawayErrorDeg = 4.0f;
 float iZoneDeg = 40.0f;
 float integratorLimit = 200.0f;
-float maxCommandStep = 0.02f;
 float minEffectiveCommand = 0.08f;
 float derivativeLpfAlpha = 0.15f;
 
@@ -100,9 +99,6 @@ float pid_step(float targetPosition)
         command = clampf(command, -outputLimit, outputLimit);
     }
 
-    const float deltaCommand = clampf(command - prevCommand, -maxCommandStep, maxCommandStep);
-    command = prevCommand + deltaCommand;
-
     const float absCommand = fabsf(command);
     if ((absErrorDeg > breakawayErrorDeg) && (absErrorDeg > nearTargetBandDeg))
     {
@@ -147,6 +143,22 @@ void pid_set_gains(float newKp, float newKi, float newKd)
     derivativeFiltered = 0.0f;
 }
 
+void pid_set_deadband_deg(float newDeadbandDeg)
+{
+    deadbandDeg = newDeadbandDeg < 0.0f ? 0.0f : newDeadbandDeg;
+    integrator = 0.0f;
+    derivativeFiltered = 0.0f;
+    prevCommand = 0.0f;
+}
+
+void pid_set_settle_velocity_deg_per_sec(float newSettleVelocityDegPerSec)
+{
+    settleVelocityDegPerSec = newSettleVelocityDegPerSec < 0.0f ? 0.0f : newSettleVelocityDegPerSec;
+    integrator = 0.0f;
+    derivativeFiltered = 0.0f;
+    prevCommand = 0.0f;
+}
+
 float pid_get_kp(void)
 {
     return kp;
@@ -160,6 +172,16 @@ float pid_get_ki(void)
 float pid_get_kd(void)
 {
     return kd;
+}
+
+float pid_get_deadband_deg(void)
+{
+    return deadbandDeg;
+}
+
+float pid_get_settle_velocity_deg_per_sec(void)
+{
+    return settleVelocityDegPerSec;
 }
 
 float pid_get_last_target_angle_deg(void)
