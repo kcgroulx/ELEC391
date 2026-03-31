@@ -1,17 +1,19 @@
 /*
  * song_player.cpp
  * ===========================================================================
- * Top-level song playing logic — ESP32/Arduino version.
+ * Top-level song playing logic.
  *
- * STM32 → ESP32 changes:
- *   HAL_UART_Transmit  → Serial.print
- *   HAL_GPIO_ReadPin   → digitalRead
- *   bool               → bool (Arduino defines this natively)
+ * Fixed function names to match teammate's refactor:
+ *   motor_control_setMotorSpeed()        → motor_control_set_motor_speed()
+ *   motor_controller_encoderZeroPosition() → motor_control_zero_position()
+ *   home switch pin                      → app_config::home_switch_pin
  * ===========================================================================
  */
 
 #include "song_player.h"
 #include "motor_control.h"
+#include "platform_io.h"
+#include "config.h"
 #include "note_player.h"
 #include "piano_keymap.h"
 #include "midi_parser.h"
@@ -27,22 +29,32 @@ static uint8_t   uartBuf[MIDI_UART_BUF_SIZE];
 static NoteEvent events[MIDI_MAX_NOTES];
 
 /* --------------------------------------------------------------------------
- * SongPlayer_run
- * Waits for a MIDI file over Serial, parses it, plays it.
+ * SongPlayer_run — receive MIDI over Serial and play it
  * -------------------------------------------------------------------------- */
 void SongPlayer_run(void)
 {
     MidiParseResult result;
-    Serial.println("Waiting for MIDI file...");
+
+    /* Do NOT print anything to Serial here — printing and receiving share
+     * the same UART. Any bytes we send out could interfere with the PC
+     * detecting readiness, and the ESP32's own TX chars don't corrupt RX
+     * but closing the Serial Monitor before sending is still recommended.
+     *
+     * Only call Midi_printResult when a real transfer actually occurred
+     * (i.e. not a routine UART timeout while waiting for data). Printing
+     * UART_FAIL on every loop() call would flood Serial and corrupt the
+     * next receive attempt. */
     Midi_receiveAndParse(uartBuf, sizeof(uartBuf), events, MIDI_MAX_NOTES, &result);
-    Midi_printResult(&result);
+    if (result.status != MIDI_ERR_UART) {
+        Midi_printResult(&result);
+    }
     if (result.status == MIDI_OK) {
         NotePlayer_playSequence(events, result.noteCount);
     }
 }
 
 /* --------------------------------------------------------------------------
- * Test: play C major scale
+ * Hardcoded C major scale (C4–C5, one octave)
  * -------------------------------------------------------------------------- */
 static NoteEvent s_scale[] = {
     {60, 400, 50},  /* C4 */
@@ -50,15 +62,19 @@ static NoteEvent s_scale[] = {
     {64, 400, 50},  /* E4 */
     {65, 400, 50},  /* F4 */
     {67, 400, 50},  /* G4 */
+    {69, 400, 50},  /* A4 */
+    {71, 400, 50},  /* B4 */
+    {72, 400,  0},  /* C5 */
 };
+static const uint16_t s_scaleLen = sizeof(s_scale) / sizeof(s_scale[0]);
 
 void test_playScale(void)
 {
-    NotePlayer_playSequence(s_scale, 5);
+    NotePlayer_playSequence(s_scale, s_scaleLen);
 }
 
 /* --------------------------------------------------------------------------
- * Test: print key map over Serial
+ * Test: print full key map over Serial
  * -------------------------------------------------------------------------- */
 void test_printKeyMap(void)
 {
@@ -77,35 +93,34 @@ void test_printKeyMap(void)
 }
 
 /* --------------------------------------------------------------------------
- * Homing
+ * Homing — uses app_config::home_switch_pin from config.h
  *
- * EDIT THESE to match your hardware:
- *   HOMING_SWITCH_PIN       GPIO pin connected to your limit switch
- *   HOMING_SWITCH_ACTIVE    HIGH or LOW when switch is pressed
- *   HOMING_DIRECTION        +1.0 or -1.0 depending on which way home is
+ * To configure:
+ *   Set home_switch_pin in config.h (currently -1 = disabled).
+ *   Set HOMING_DIRECTION to +1.0f or -1.0f depending on which way is home.
  * -------------------------------------------------------------------------- */
-#define HOMING_SWITCH_PIN       15      /* TODO: set your limit switch pin   */
-#define HOMING_SWITCH_ACTIVE    LOW     /* TODO: HIGH or LOW when pressed    */
-#define HOMING_SPEED            0.2f
-#define HOMING_DIRECTION        (-1.0f) /* TODO: set direction toward home   */
-
-static bool isHomeSwitchActive(void)
-{
-    return digitalRead(HOMING_SWITCH_PIN) == HOMING_SWITCH_ACTIVE;
-}
+#define HOMING_SPEED        0.2f
+#define HOMING_DIRECTION    (-1.0f)   /* TODO: set direction toward home     */
 
 void song_player_homing(void)
 {
-    pinMode(HOMING_SWITCH_PIN, INPUT_PULLUP);
+    if (app_config::home_switch_pin < 0) {
+        /* No home switch configured — just zero the encoder at current pos */
+        Serial.println("No home switch configured — zeroing at current position.");
+        motor_control_zero_position();
+        return;
+    }
+
+    Serial.println("Homing...");
 
     /* Drive toward home */
-    motor_control_setMotorSpeed(HOMING_DIRECTION * HOMING_SPEED);
+    motor_control_set_motor_speed(HOMING_DIRECTION * HOMING_SPEED);
 
-    /* Wait for limit switch */
-    while (!isHomeSwitchActive()) { /* spin — PID timer still running */ }
+    /* Wait for limit switch via platform_io */
+    while (!platform_io_is_home_switch_active()) { /* spin */ }
 
-    /* Stop and zero encoder */
-    motor_control_setMotorSpeed(0.0f);
-    motor_controller_encoderZeroPosition();
+    /* Stop and zero */
+    motor_control_set_motor_speed(0.0f);
+    motor_control_zero_position();
     Serial.println("Homing complete.");
 }

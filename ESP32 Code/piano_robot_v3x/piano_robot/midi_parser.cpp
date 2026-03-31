@@ -459,25 +459,52 @@ void Midi_parseBuffer(const uint8_t*   buf,
 
 uint32_t Midi_receiveUART(uint8_t* buf, uint32_t bufSize, uint32_t timeoutMs)
 {
-    uint8_t  lenBytes[4];
+    /* -----------------------------------------------------------------------
+     * Robust byte-by-byte receive with one shared deadline.
+     *
+     * Why not Serial.readBytes() x2:
+     *   Serial.setTimeout() only applies to the next readBytes call.
+     *   The second call reverts to the 1 s default — too short, causes
+     *   UART_FAIL on anything but tiny files.
+     *
+     * Also runs hal_runPendingPID() while waiting so the motor stays live.
+     * ----------------------------------------------------------------------- */
+
+    uint32_t deadline = (uint32_t)millis() + timeoutMs;
     uint32_t fileLen;
     uint32_t received;
+    int b0, b1, b2, b3;
 
-    /* Wait for 4-byte length header */
-    Serial.setTimeout((long)timeoutMs);
-    if (Serial.readBytes((char*)lenBytes, 4) != 4) return 0;
+    /* Read one byte before deadline, -1 on timeout */
+    #define READ_BYTE(var) \
+        do { \
+            (var) = -1; \
+            while ((int32_t)(deadline - (uint32_t)millis()) > 0) { \
+                hal_runPendingPID(); \
+                if (Serial.available()) { (var) = Serial.read(); break; } \
+            } \
+            if ((var) < 0) return 0; \
+        } while(0)
 
-    fileLen = ((uint32_t)lenBytes[0] << 24)
-            | ((uint32_t)lenBytes[1] << 16)
-            | ((uint32_t)lenBytes[2] <<  8)
-            | ((uint32_t)lenBytes[3]);
+    /* 4-byte big-endian length header */
+    READ_BYTE(b0); READ_BYTE(b1); READ_BYTE(b2); READ_BYTE(b3);
+
+    fileLen = ((uint32_t)b0 << 24)
+            | ((uint32_t)b1 << 16)
+            | ((uint32_t)b2 <<  8)
+            | ((uint32_t)b3);
 
     if (fileLen == 0 || fileLen > bufSize) return 0;
 
-    /* Receive file bytes */
-    received = (uint32_t)Serial.readBytes((char*)buf, fileLen);
-    if (received != fileLen) return 0;
+    /* Read file bytes */
+    received = 0;
+    while (received < fileLen) {
+        int b;
+        READ_BYTE(b);
+        buf[received++] = (uint8_t)b;
+    }
 
+    #undef READ_BYTE
     return fileLen;
 }
 

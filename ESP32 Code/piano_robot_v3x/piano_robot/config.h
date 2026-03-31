@@ -31,7 +31,14 @@ constexpr int finger_pins[finger_count] = {21, 22, 23, 25, 26, 27};
 constexpr float encoder_cpr_motor = 64.0f;
 constexpr float gear_ratio = 30.0f;
 constexpr float encoder_cpr_output = encoder_cpr_motor * gear_ratio;
-constexpr float linear_travel_per_rev = 1.0f;
+/* mm of carriage travel per one full output-shaft revolution.
+ * = pulley_teeth * belt_pitch_mm
+ * GT2 belt (2 mm pitch), 20-tooth pulley  ->  20 * 2 = 40 mm/rev  (VERIFY THIS)
+ * If the robot still reads wrong, measure: move a known distance (e.g. 100 mm
+ * with a ruler), read encoder_counts from telemetry, then:
+ *   linear_travel_per_rev = (measured_mm / encoder_counts) * encoder_cpr_output
+ * Previous value was 1.0f which caused ~37x under-reporting. */
+constexpr float linear_travel_per_rev = 60.0f;
 constexpr float position_to_angle_deg_scale = 360.0f / linear_travel_per_rev;
 constexpr float angle_deg_to_position_scale = linear_travel_per_rev / 360.0f;
 }

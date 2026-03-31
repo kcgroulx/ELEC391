@@ -21,18 +21,61 @@
 #include "note_player.h"
 #include "piano_keymap.h"
 #include "hal_interface.h"
-
+#include "platform_io.h"
+#include "motor_control.h"
+#include "pid.h"
+#include "Arduino.h"
+#include <stdio.h>
 
 /* --------------------------------------------------------------------------
  * Internal helpers
  * -------------------------------------------------------------------------- */
 
-/* Optional debug output — wire up to your UART if needed.
- * Replace the body with e.g.:
- *   HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
- */
 static void debugLog(const char* msg) {
-    (void)msg;
+    Serial.print(msg);
+}
+
+/* Print a single labelled float on one line, e.g. "  pos_mm : 47.30\r\n" */
+static void logFloat(const char* label, float val) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "  %-18s: %.2f\r\n", label, (double)val);
+    Serial.print(buf);
+}
+
+/* Print a single labelled int on one line */
+static void logInt(const char* label, int32_t val) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "  %-18s: %ld\r\n", label, (long)val);
+    Serial.print(buf);
+}
+
+/* Print a divider + note header before each move */
+static void logNoteHeader(const char* noteName, uint8_t midiNote,
+                          float targetMM, float currentMM)
+{
+    char buf[80];
+    snprintf(buf, sizeof(buf),
+        "\r\n--- NOTE %s (midi %u) ---\r\n", noteName, (unsigned)midiNote);
+    Serial.print(buf);
+    logFloat("target_mm",  targetMM);
+    logFloat("current_mm", currentMM);
+    logFloat("travel_mm",  targetMM - currentMM);
+    logInt  ("encoder_cnt", platform_io_get_encoder_count());
+}
+
+/* Print state after the motor has settled */
+static void logArrival(float targetMM)
+{
+    float actualMM  = hal_motorGetPosition();
+    float errorMM   = targetMM - actualMM;
+    Serial.print("  [arrived]\r\n");
+    logFloat("actual_mm",       actualMM);
+    logFloat("error_mm",        errorMM);
+    logInt  ("encoder_cnt",     platform_io_get_encoder_count());
+    logFloat("pid_err_deg",     pid_get_last_error_deg());
+    logFloat("pid_cmd",         pid_get_last_command());
+    logFloat("pid_target_deg",  pid_get_last_target_angle_deg());
+    logFloat("pid_actual_deg",  pid_get_last_angle_deg());
 }
 
 
@@ -64,17 +107,30 @@ int NotePlayer_playNote(uint8_t midiNote, uint32_t durationMs)
     }
 
     /* ── 3. Move motor ───────────────────────────────────────────────────── */
+    logNoteHeader(key->name, midiNote, choice.motorPositionMM, currentMM);
+    {
+        char buf[48];
+        snprintf(buf, sizeof(buf), "  %-18s: %d\r\n", "finger", (int)choice.finger);
+        Serial.print(buf);
+    }
     hal_motorSetTarget(choice.motorPositionMM);
 
     /* ── 4. Wait for arrival ─────────────────────────────────────────────── */
     hal_motorWaitUntilArrived();
 
     /* ── 5. Settle delay ─────────────────────────────────────────────────── */
+    logArrival(choice.motorPositionMM);
     if (HAL_SETTLE_TIME_MS > 0U) {
         hal_delay(HAL_SETTLE_TIME_MS);
     }
 
     /* ── 6. Press finger ─────────────────────────────────────────────────── */
+    {
+        char buf[56];
+        snprintf(buf, sizeof(buf), "  [press finger %d  hold %lums]\r\n",
+                 (int)choice.finger, (unsigned long)durationMs);
+        Serial.print(buf);
+    }
     hal_fingerPress((uint8_t)choice.finger);
 
     /* ── 7. Hold ─────────────────────────────────────────────────────────── */
@@ -83,6 +139,7 @@ int NotePlayer_playNote(uint8_t midiNote, uint32_t durationMs)
     hal_delay(holdMs);
 
     /* ── 8. Release ──────────────────────────────────────────────────────── */
+    debugLog("  [release]\r\n");
     hal_fingerRelease((uint8_t)choice.finger);
 
     return 1;
