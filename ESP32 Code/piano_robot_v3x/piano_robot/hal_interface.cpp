@@ -38,7 +38,9 @@ static volatile float    s_targetMM     = 0.0f;
 static volatile int      s_motorArrived = 0;
 static volatile uint16_t s_settledTicks = 0;
 
-static const uint16_t SETTLED_TICKS_REQUIRED = 100U;   /* 100 ms at 1 kHz */
+// Reduced from 100 to 20 ticks: motor is already stopped inside deadband,
+// we just need brief confirmation it is not oscillating through the window.
+static const uint16_t SETTLED_TICKS_REQUIRED = 20U;    /* 20 ms at 1 kHz */
 
 static uint8_t s_fingerMask = 0;
 
