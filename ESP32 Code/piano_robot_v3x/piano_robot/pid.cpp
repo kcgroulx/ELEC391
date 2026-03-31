@@ -1,88 +1,183 @@
-/*
- * pid.cpp
- * ===========================================================================
- * PID controller — logic identical to STM32 version.
- * Only change: include motor_control.h directly (no tim.h needed).
- * ===========================================================================
- */
-
 #include "pid.h"
+
+#include <math.h>
+
+#include "config.h"
 #include "motor_control.h"
 
-#define DT 0.001f   /* 1 ms — matches the 1 kHz timer in piano_robot.ino */
-
-/* Position PID gains */
-static float kp = 0.0310f;
-static float ki = 0.0018f;
-static float kd = 0.0008f;
-
-/* Controller limits */
-static float output_limit          = 1.0f;
-static float deadband_deg          = 1.0f;
-static float breakaway_error_deg   = 4.0f;
-static float i_zone_deg            = 40.0f;
-static float integrator_limit      = 200.0f;
-static float max_command_step      = 0.02f;
-static float min_effective_command = 0.08f;
-
-/* Derivative filter */
-static float d_lpf_alpha = 0.15f;
-
-/* Internal state */
-static float integrator   = 0.0f;
-static float prev_angle   = 0.0f;
-static float d_filtered   = 0.0f;
-static float prev_command = 0.0f;
-
-static inline float clampf(float x, float lo, float hi)
+namespace
 {
-    if (x < lo) return lo;
-    if (x > hi) return hi;
-    return x;
+constexpr float dt = static_cast<float>(app_config::control_period_us) / 1000000.0f;
+
+float kp = 0.0310f;
+float ki = 0.0008f;
+float kd = 0.002f;
+
+float outputLimit = 1.0f;
+float deadbandDeg = 2.0f;
+float settleVelocityDegPerSec = 8.0f;
+float nearTargetBandDeg = 12.0f;
+float nearTargetOutputLimit = 0.25f;
+float breakawayErrorDeg = 4.0f;
+float iZoneDeg = 40.0f;
+float integratorLimit = 200.0f;
+float maxCommandStep = 0.02f;
+float minEffectiveCommand = 0.08f;
+float derivativeLpfAlpha = 0.15f;
+
+float integrator = 0.0f;
+float prevAngle = 0.0f;
+float derivativeFiltered = 0.0f;
+float prevCommand = 0.0f;
+float lastTargetAngleDeg = 0.0f;
+float lastAngleDeg = 0.0f;
+float lastErrorDeg = 0.0f;
+
+float clampf(float value, float low, float high)
+{
+    if (value < low)
+    {
+        return low;
+    }
+
+    if (value > high)
+    {
+        return high;
+    }
+
+    return value;
+}
 }
 
-float cascaded_control_step(float target_angle_deg)
+float pid_step(float targetPosition)
 {
-    float angle     = motor_controller_encoderGetAngleDeg();
-    float error     = target_angle_deg - angle;
-    float abs_error = (error < 0.0f) ? -error : error;
+    const float targetAngleDeg = targetPosition * app_config::position_to_angle_deg_scale;
+    const float angleDeg = motor_control_get_angle_deg();
+    const float errorDeg = targetAngleDeg - angleDeg;
+    const float absErrorDeg = fabsf(errorDeg);
 
-    /* Derivative on measurement */
-    float angle_rate = (angle - prev_angle) / DT;
-    prev_angle = angle;
-    d_filtered += d_lpf_alpha * (angle_rate - d_filtered);
+    lastTargetAngleDeg = targetAngleDeg;
+    lastAngleDeg = angleDeg;
+    lastErrorDeg = errorDeg;
 
-    if (abs_error <= deadband_deg) {
-        integrator   = 0.0f;
-        prev_command = 0.0f;
+    const float angleRateDegPerSec = (angleDeg - prevAngle) / dt;
+    prevAngle = angleDeg;
+    derivativeFiltered += derivativeLpfAlpha * (angleRateDegPerSec - derivativeFiltered);
+    const float absVelocityDegPerSec = fabsf(derivativeFiltered);
+
+    if ((absErrorDeg <= deadbandDeg) && (absVelocityDegPerSec <= settleVelocityDegPerSec))
+    {
+        integrator = 0.0f;
+        prevCommand = 0.0f;
         return 0.0f;
     }
 
-    if (abs_error <= i_zone_deg) {
-        integrator += error * DT;
-        integrator  = clampf(integrator, -integrator_limit, integrator_limit);
-    } else {
+    if (absErrorDeg <= iZoneDeg)
+    {
+        integrator += errorDeg * dt;
+        integrator = clampf(integrator, -integratorLimit, integratorLimit);
+    }
+    else
+    {
         integrator = 0.0f;
     }
 
-    float u = kp * error + ki * integrator + (-kd * d_filtered);
-    u = clampf(u, -output_limit, output_limit);
+    const float pTerm = kp * errorDeg;
+    const float iTerm = ki * integrator;
+    const float dTerm = -kd * derivativeFiltered;
 
-    float du      = clampf(u - prev_command, -max_command_step, max_command_step);
-    float command = prev_command + du;
+    float command = pTerm + iTerm + dTerm;
 
-    float abs_command = (command < 0.0f) ? -command : command;
-    if (abs_error > breakaway_error_deg) {
-        if ((command * error) > 0.0f) {
-            if ((command > 0.0f) && (abs_command < min_effective_command))
-                command = min_effective_command;
-            else if ((command < 0.0f) && (abs_command < min_effective_command))
-                command = -min_effective_command;
-        } else if ((command * error) < 0.0f) {
+    // Near the target, remove integral drive and clamp the command harder so the
+    // motor settles instead of hunting back and forth around the setpoint.
+    if (absErrorDeg <= nearTargetBandDeg)
+    {
+        integrator = 0.0f;
+        command = clampf(pTerm + dTerm, -nearTargetOutputLimit, nearTargetOutputLimit);
+    }
+    else
+    {
+        command = clampf(command, -outputLimit, outputLimit);
+    }
+
+    const float deltaCommand = clampf(command - prevCommand, -maxCommandStep, maxCommandStep);
+    command = prevCommand + deltaCommand;
+
+    const float absCommand = fabsf(command);
+    if ((absErrorDeg > breakawayErrorDeg) && (absErrorDeg > nearTargetBandDeg))
+    {
+        if ((command * errorDeg) > 0.0f)
+        {
+            if ((command > 0.0f) && (absCommand < minEffectiveCommand))
+            {
+                command = minEffectiveCommand;
+            }
+            else if ((command < 0.0f) && (absCommand < minEffectiveCommand))
+            {
+                command = -minEffectiveCommand;
+            }
+        }
+        else if ((command * errorDeg) < 0.0f)
+        {
             command = 0.0f;
         }
     }
 
-    prev_command = command;
+    prevCommand = command;
     return command;
+}
+
+void pid_reset(void)
+{
+    integrator = 0.0f;
+    prevAngle = motor_control_get_angle_deg();
+    lastAngleDeg = prevAngle;
+    lastTargetAngleDeg = prevAngle;
+    lastErrorDeg = 0.0f;
+    derivativeFiltered = 0.0f;
+    prevCommand = 0.0f;
+}
+
+void pid_set_gains(float newKp, float newKi, float newKd)
+{
+    kp = newKp;
+    ki = newKi;
+    kd = newKd;
+    integrator = 0.0f;
+    derivativeFiltered = 0.0f;
+}
+
+float pid_get_kp(void)
+{
+    return kp;
+}
+
+float pid_get_ki(void)
+{
+    return ki;
+}
+
+float pid_get_kd(void)
+{
+    return kd;
+}
+
+float pid_get_last_target_angle_deg(void)
+{
+    return lastTargetAngleDeg;
+}
+
+float pid_get_last_angle_deg(void)
+{
+    return lastAngleDeg;
+}
+
+float pid_get_last_error_deg(void)
+{
+    return lastErrorDeg;
+}
+
+float pid_get_last_command(void)
+{
+    return prevCommand;
 }

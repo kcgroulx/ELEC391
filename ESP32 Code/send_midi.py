@@ -6,9 +6,9 @@ Sends a MIDI file to the ESP32 piano robot over UART.
 
 USAGE:
     python send_midi.py mysong.mid
-    python send_midi.py mysong.mid --port COM5          (Windows)
+    python send_midi.py mysong.mid --port COM4          (Windows)
     python send_midi.py mysong.mid --port /dev/ttyUSB0  (Linux/Mac)
-    python send_midi.py mysong.mid --port COM5 --baud 115200
+    python send_midi.py mysong.mid --port COM4 --baud 115200
 
 PROTOCOL:
     Sends a 4-byte big-endian file length, then the raw MIDI bytes.
