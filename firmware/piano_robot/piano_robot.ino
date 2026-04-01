@@ -62,5 +62,11 @@ void setup(void)
 void loop(void)
 {
     hal_runPendingPID();   /* keep motor under control between songs */
-    test_playScale();
+
+    /* --- Hardware tests --- */
+    test_fingersSolenoidOnly();   /* 1. Fire each solenoid without moving   */
+    //test_allFingers();            /* 2. Move to keys + press all 5 fingers  */
+    /* test_playScale(); */       /* 3. Original scale test (disabled)      */
+
+    while (true) { hal_runPendingPID(); }  /* stop after one pass */
 }

@@ -74,6 +74,53 @@ void test_playScale(void)
 }
 
 /* --------------------------------------------------------------------------
+ * Test: fire each solenoid in order (no motor movement)
+ * Verifies wiring: W1(GPIO21), W2(22), W3(23), B1(25), B2(26)
+ * -------------------------------------------------------------------------- */
+void test_fingersSolenoidOnly(void)
+{
+    const char* names[] = {"W1 (GPIO21)", "W2 (GPIO22)", "W3 (GPIO23)",
+                           "B1 (GPIO25)", "B2 (GPIO26)"};
+    Serial.println("\r\n=== SOLENOID TEST — no motor movement ===");
+    for (uint8_t i = 0; i < 5; i++) {
+        char buf[48];
+        snprintf(buf, sizeof(buf), "  Firing finger %s ...\r\n", names[i]);
+        Serial.print(buf);
+        hal_fingerPress(i);
+        hal_delay(1300);
+        hal_fingerRelease(i);
+        hal_delay(200);
+    }
+    Serial.println("=== SOLENOID TEST DONE ===\r\n");
+}
+
+/* --------------------------------------------------------------------------
+ * Test: play notes that exercise all 5 fingers
+ *
+ * Sequence chosen so the greedy finger picker selects each finger:
+ *   1. C2  (midi 36) — only option is W1 at 0mm         → tests W1
+ *   2. C#2 (midi 37) — B1 at 0mm is only reachable opt  → tests B1
+ *   3. E3  (midi 52) — motor at 0, W3 at 117.5mm closest→ tests W3
+ *   4. D#3 (midi 51) — motor at ~117, B2 at 141mm closest→ tests B2
+ *   5. D3  (midi 50) — motor at ~141, W2 at 141mm closest→ tests W2
+ * -------------------------------------------------------------------------- */
+static NoteEvent s_fingerTest[] = {
+    {36, 500, 100},  /* C2  → W1 */
+    {37, 500, 100},  /* C#2 → B1 */
+    {52, 500, 100},  /* E3  → W3 */
+    {51, 500, 100},  /* D#3 → B2 */
+    {50, 500,   0},  /* D3  → W2 */
+};
+static const uint16_t s_fingerTestLen = sizeof(s_fingerTest) / sizeof(s_fingerTest[0]);
+
+void test_allFingers(void)
+{
+    Serial.println("\r\n=== FINGER TEST — move + press all 5 fingers ===");
+    NotePlayer_playSequence(s_fingerTest, s_fingerTestLen);
+    Serial.println("=== FINGER TEST DONE ===\r\n");
+}
+
+/* --------------------------------------------------------------------------
  * Test: print full key map over Serial
  * -------------------------------------------------------------------------- */
 void test_printKeyMap(void)

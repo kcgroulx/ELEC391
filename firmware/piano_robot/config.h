@@ -25,8 +25,8 @@ constexpr bool home_switch_active_level = LOW;
 constexpr bool user_button_active_level = LOW;
 constexpr bool finger_active_level = HIGH;
 
-constexpr size_t finger_count = 6U;
-constexpr int finger_pins[finger_count] = {21, 22, 23, 25, 26, 27};
+constexpr size_t finger_count = 5U;
+constexpr int finger_pins[finger_count] = {21, 22, 23, 25, 26};
 
 constexpr float encoder_cpr_motor = 64.0f;
 constexpr float gear_ratio = 30.0f;
