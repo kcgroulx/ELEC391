@@ -186,53 +186,57 @@ static inline int PianoKey_isReachable(const PianoKey* key) {
 static const PianoKey KEY_MAP[KEY_MAP_SIZE] = {
 
     /* ── Octave 2  (wki 0–6) ──────────────────────────────────────────────
-     * W2 needs wki >= 2, W3 needs wki >= 4.
-     * Low keys only have 1–2 white options because W2/W3 would go negative. */
+     * W2 needs wki >= 2, W3 needs wki >= 4.  B2 needs lwki >= 2.
+     * Low keys only have 1–2 options because W2/W3/B2 would go negative.
+     *
+     * FIX: Each macro arg is now the KEY's own wki/lwki so each finger
+     *      option produces a DIFFERENT motor position that correctly
+     *      places that finger over the target key.                         */
 
     /* midi  name    type       option[0]                  option[1]                  option[2]   */
     { 36, "C2",  KEY_WHITE, { OPT(FINGER_W1,W1POS(0)),  NO_OPT,                    NO_OPT                    }},
-    { 37, "C#2", KEY_BLACK, { OPT(FINGER_B1,B1POS(0)),  OPT(FINGER_B2,B2POS(2)),  NO_OPT                    }},
+    { 37, "C#2", KEY_BLACK, { OPT(FINGER_B1,B1POS(0)),  NO_OPT,                    NO_OPT                    }},
     { 38, "D2",  KEY_WHITE, { OPT(FINGER_W1,W1POS(1)),  NO_OPT,                    NO_OPT                    }},
-    { 39, "D#2", KEY_BLACK, { OPT(FINGER_B1,B1POS(1)),  OPT(FINGER_B2,B2POS(3)),  NO_OPT                    }},
-    { 40, "E2",  KEY_WHITE, { OPT(FINGER_W1,W1POS(2)),  OPT(FINGER_W2,W2POS(4)),  NO_OPT                    }},
-    { 41, "F2",  KEY_WHITE, { OPT(FINGER_W1,W1POS(3)),  OPT(FINGER_W2,W2POS(5)),  NO_OPT                    }},
-    { 42, "F#2", KEY_BLACK, { OPT(FINGER_B1,B1POS(3)),  OPT(FINGER_B2,B2POS(5)),  NO_OPT                    }},
-    { 43, "G2",  KEY_WHITE, { OPT(FINGER_W1,W1POS(4)),  OPT(FINGER_W2,W2POS(6)),  NO_OPT                    }},
-    { 44, "G#2", KEY_BLACK, { OPT(FINGER_B1,B1POS(4)),  OPT(FINGER_B2,B2POS(6)),  NO_OPT                    }},
-    { 45, "A2",  KEY_WHITE, { OPT(FINGER_W1,W1POS(5)),  OPT(FINGER_W2,W2POS(7)),  NO_OPT                    }},
-    { 46, "A#2", KEY_BLACK, { OPT(FINGER_B1,B1POS(5)),  OPT(FINGER_B2,B2POS(7)),  NO_OPT                    }},
-    { 47, "B2",  KEY_WHITE, { OPT(FINGER_W1,W1POS(6)),  OPT(FINGER_W2,W2POS(8)),  NO_OPT                    }},
+    { 39, "D#2", KEY_BLACK, { OPT(FINGER_B1,B1POS(1)),  NO_OPT,                    NO_OPT                    }},
+    { 40, "E2",  KEY_WHITE, { OPT(FINGER_W1,W1POS(2)),  OPT(FINGER_W2,W2POS(2)),  NO_OPT                    }},
+    { 41, "F2",  KEY_WHITE, { OPT(FINGER_W1,W1POS(3)),  OPT(FINGER_W2,W2POS(3)),  NO_OPT                    }},
+    { 42, "F#2", KEY_BLACK, { OPT(FINGER_B1,B1POS(3)),  OPT(FINGER_B2,B2POS(3)),  NO_OPT                    }},
+    { 43, "G2",  KEY_WHITE, { OPT(FINGER_W1,W1POS(4)),  OPT(FINGER_W2,W2POS(4)),  OPT(FINGER_W3,W3POS(4))  }},
+    { 44, "G#2", KEY_BLACK, { OPT(FINGER_B1,B1POS(4)),  OPT(FINGER_B2,B2POS(4)),  NO_OPT                    }},
+    { 45, "A2",  KEY_WHITE, { OPT(FINGER_W1,W1POS(5)),  OPT(FINGER_W2,W2POS(5)),  OPT(FINGER_W3,W3POS(5))  }},
+    { 46, "A#2", KEY_BLACK, { OPT(FINGER_B1,B1POS(5)),  OPT(FINGER_B2,B2POS(5)),  NO_OPT                    }},
+    { 47, "B2",  KEY_WHITE, { OPT(FINGER_W1,W1POS(6)),  OPT(FINGER_W2,W2POS(6)),  OPT(FINGER_W3,W3POS(6))  }},
 
     /* ── Octave 3  (wki 7–13) ─────────────────────────────────────────────── */
-    { 48, "C3",  KEY_WHITE, { OPT(FINGER_W1,W1POS(7)),  OPT(FINGER_W2,W2POS(9)),  OPT(FINGER_W3,W3POS(11)) }},
-    { 49, "C#3", KEY_BLACK, { OPT(FINGER_B1,B1POS(7)),  OPT(FINGER_B2,B2POS(9)),  NO_OPT                    }},
-    { 50, "D3",  KEY_WHITE, { OPT(FINGER_W1,W1POS(8)),  OPT(FINGER_W2,W2POS(10)), OPT(FINGER_W3,W3POS(12)) }},
-    { 51, "D#3", KEY_BLACK, { OPT(FINGER_B1,B1POS(8)),  OPT(FINGER_B2,B2POS(10)), NO_OPT                    }},
-    { 52, "E3",  KEY_WHITE, { OPT(FINGER_W1,W1POS(9)),  OPT(FINGER_W2,W2POS(11)), OPT(FINGER_W3,W3POS(13)) }},
-    { 53, "F3",  KEY_WHITE, { OPT(FINGER_W1,W1POS(10)), OPT(FINGER_W2,W2POS(12)), OPT(FINGER_W3,W3POS(14)) }},
-    { 54, "F#3", KEY_BLACK, { OPT(FINGER_B1,B1POS(10)), OPT(FINGER_B2,B2POS(12)), NO_OPT                    }},
-    { 55, "G3",  KEY_WHITE, { OPT(FINGER_W1,W1POS(11)), OPT(FINGER_W2,W2POS(13)), OPT(FINGER_W3,W3POS(15)) }},
-    { 56, "G#3", KEY_BLACK, { OPT(FINGER_B1,B1POS(11)), OPT(FINGER_B2,B2POS(13)), NO_OPT                    }},
-    { 57, "A3",  KEY_WHITE, { OPT(FINGER_W1,W1POS(12)), OPT(FINGER_W2,W2POS(14)), OPT(FINGER_W3,W3POS(16)) }},
-    { 58, "A#3", KEY_BLACK, { OPT(FINGER_B1,B1POS(12)), OPT(FINGER_B2,B2POS(14)), NO_OPT                    }},
-    { 59, "B3",  KEY_WHITE, { OPT(FINGER_W1,W1POS(13)), OPT(FINGER_W2,W2POS(15)), OPT(FINGER_W3,W3POS(17)) }},
+    { 48, "C3",  KEY_WHITE, { OPT(FINGER_W1,W1POS(7)),  OPT(FINGER_W2,W2POS(7)),  OPT(FINGER_W3,W3POS(7))  }},
+    { 49, "C#3", KEY_BLACK, { OPT(FINGER_B1,B1POS(7)),  OPT(FINGER_B2,B2POS(7)),  NO_OPT                    }},
+    { 50, "D3",  KEY_WHITE, { OPT(FINGER_W1,W1POS(8)),  OPT(FINGER_W2,W2POS(8)),  OPT(FINGER_W3,W3POS(8))  }},
+    { 51, "D#3", KEY_BLACK, { OPT(FINGER_B1,B1POS(8)),  OPT(FINGER_B2,B2POS(8)),  NO_OPT                    }},
+    { 52, "E3",  KEY_WHITE, { OPT(FINGER_W1,W1POS(9)),  OPT(FINGER_W2,W2POS(9)),  OPT(FINGER_W3,W3POS(9))  }},
+    { 53, "F3",  KEY_WHITE, { OPT(FINGER_W1,W1POS(10)), OPT(FINGER_W2,W2POS(10)), OPT(FINGER_W3,W3POS(10)) }},
+    { 54, "F#3", KEY_BLACK, { OPT(FINGER_B1,B1POS(10)), OPT(FINGER_B2,B2POS(10)), NO_OPT                    }},
+    { 55, "G3",  KEY_WHITE, { OPT(FINGER_W1,W1POS(11)), OPT(FINGER_W2,W2POS(11)), OPT(FINGER_W3,W3POS(11)) }},
+    { 56, "G#3", KEY_BLACK, { OPT(FINGER_B1,B1POS(11)), OPT(FINGER_B2,B2POS(11)), NO_OPT                    }},
+    { 57, "A3",  KEY_WHITE, { OPT(FINGER_W1,W1POS(12)), OPT(FINGER_W2,W2POS(12)), OPT(FINGER_W3,W3POS(12)) }},
+    { 58, "A#3", KEY_BLACK, { OPT(FINGER_B1,B1POS(12)), OPT(FINGER_B2,B2POS(12)), NO_OPT                    }},
+    { 59, "B3",  KEY_WHITE, { OPT(FINGER_W1,W1POS(13)), OPT(FINGER_W2,W2POS(13)), OPT(FINGER_W3,W3POS(13)) }},
 
     /* ── Octave 4  (wki 14–20) — middle octave ────────────────────────────── */
-    { 60, "C4",  KEY_WHITE, { OPT(FINGER_W1,W1POS(14)), OPT(FINGER_W2,W2POS(16)), OPT(FINGER_W3,W3POS(18)) }},
-    { 61, "C#4", KEY_BLACK, { OPT(FINGER_B1,B1POS(14)), OPT(FINGER_B2,B2POS(16)), NO_OPT                    }},
-    { 62, "D4",  KEY_WHITE, { OPT(FINGER_W1,W1POS(15)), OPT(FINGER_W2,W2POS(17)), OPT(FINGER_W3,W3POS(19)) }},
-    { 63, "D#4", KEY_BLACK, { OPT(FINGER_B1,B1POS(15)), OPT(FINGER_B2,B2POS(17)), NO_OPT                    }},
-    { 64, "E4",  KEY_WHITE, { OPT(FINGER_W1,W1POS(16)), OPT(FINGER_W2,W2POS(18)), OPT(FINGER_W3,W3POS(20)) }},
-    { 65, "F4",  KEY_WHITE, { OPT(FINGER_W1,W1POS(17)), OPT(FINGER_W2,W2POS(19)), OPT(FINGER_W3,W3POS(21)) }},
-    { 66, "F#4", KEY_BLACK, { OPT(FINGER_B1,B1POS(17)), OPT(FINGER_B2,B2POS(19)), NO_OPT                    }},
-    { 67, "G4",  KEY_WHITE, { OPT(FINGER_W1,W1POS(18)), OPT(FINGER_W2,W2POS(20)), OPT(FINGER_W3,W3POS(22)) }},
-    { 68, "G#4", KEY_BLACK, { OPT(FINGER_B1,B1POS(18)), OPT(FINGER_B2,B2POS(20)), NO_OPT                    }},
-    { 69, "A4",  KEY_WHITE, { OPT(FINGER_W1,W1POS(19)), OPT(FINGER_W2,W2POS(21)), OPT(FINGER_W3,W3POS(23)) }},
-    { 70, "A#4", KEY_BLACK, { OPT(FINGER_B1,B1POS(19)), OPT(FINGER_B2,B2POS(21)), NO_OPT                    }},
-    { 71, "B4",  KEY_WHITE, { OPT(FINGER_W1,W1POS(20)), OPT(FINGER_W2,W2POS(22)), OPT(FINGER_W3,W3POS(24)) }},
+    { 60, "C4",  KEY_WHITE, { OPT(FINGER_W1,W1POS(14)), OPT(FINGER_W2,W2POS(14)), OPT(FINGER_W3,W3POS(14)) }},
+    { 61, "C#4", KEY_BLACK, { OPT(FINGER_B1,B1POS(14)), OPT(FINGER_B2,B2POS(14)), NO_OPT                    }},
+    { 62, "D4",  KEY_WHITE, { OPT(FINGER_W1,W1POS(15)), OPT(FINGER_W2,W2POS(15)), OPT(FINGER_W3,W3POS(15)) }},
+    { 63, "D#4", KEY_BLACK, { OPT(FINGER_B1,B1POS(15)), OPT(FINGER_B2,B2POS(15)), NO_OPT                    }},
+    { 64, "E4",  KEY_WHITE, { OPT(FINGER_W1,W1POS(16)), OPT(FINGER_W2,W2POS(16)), OPT(FINGER_W3,W3POS(16)) }},
+    { 65, "F4",  KEY_WHITE, { OPT(FINGER_W1,W1POS(17)), OPT(FINGER_W2,W2POS(17)), OPT(FINGER_W3,W3POS(17)) }},
+    { 66, "F#4", KEY_BLACK, { OPT(FINGER_B1,B1POS(17)), OPT(FINGER_B2,B2POS(17)), NO_OPT                    }},
+    { 67, "G4",  KEY_WHITE, { OPT(FINGER_W1,W1POS(18)), OPT(FINGER_W2,W2POS(18)), OPT(FINGER_W3,W3POS(18)) }},
+    { 68, "G#4", KEY_BLACK, { OPT(FINGER_B1,B1POS(18)), OPT(FINGER_B2,B2POS(18)), NO_OPT                    }},
+    { 69, "A4",  KEY_WHITE, { OPT(FINGER_W1,W1POS(19)), OPT(FINGER_W2,W2POS(19)), OPT(FINGER_W3,W3POS(19)) }},
+    { 70, "A#4", KEY_BLACK, { OPT(FINGER_B1,B1POS(19)), OPT(FINGER_B2,B2POS(19)), NO_OPT                    }},
+    { 71, "B4",  KEY_WHITE, { OPT(FINGER_W1,W1POS(20)), OPT(FINGER_W2,W2POS(20)), OPT(FINGER_W3,W3POS(20)) }},
 
     /* ── Top C ──────────────────────────────────────────────────────────────── */
-    { 72, "C5",  KEY_WHITE, { OPT(FINGER_W1,W1POS(21)), OPT(FINGER_W2,W2POS(23)), OPT(FINGER_W3,W3POS(25)) }},
+    { 72, "C5",  KEY_WHITE, { OPT(FINGER_W1,W1POS(21)), OPT(FINGER_W2,W2POS(21)), OPT(FINGER_W3,W3POS(21)) }},
 };
 
 
