@@ -22,7 +22,7 @@ void motor_control_init(void)
 
 void motor_control_set_motor_speed(float speed)
 {
-    const float clampedSpeed = constrain(speed, -1.0f, 1.0f);
+    const float clampedSpeed = constrain(-speed, -1.0f, 1.0f);
 
     if (clampedSpeed > 0.0f)
     {
@@ -44,7 +44,7 @@ void motor_control_update_encoder(void)
     const int32_t encoderDeltaCount = encoderCurrentCount - encoderRawLastCount;
 
     encoderRawLastCount = encoderCurrentCount;
-    encoderPositionCounts += encoderDeltaCount;
+    encoderPositionCounts -= encoderDeltaCount;
 }
 
 int32_t motor_control_get_position_counts(void)

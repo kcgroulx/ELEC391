@@ -33,6 +33,7 @@
 /* Set by ISR (IRAM), cleared by hal_runPendingPID() (flash). Safe because
  * the ISR only writes and the main loop only reads-then-clears. */
 static volatile bool     s_pidPending   = false;
+static volatile bool     s_pidDisabled  = false;
 
 static volatile float    s_targetMM     = 0.0f;
 static volatile int      s_motorArrived = 0;
@@ -104,9 +105,21 @@ static void hal_printTelemetry(void)
 /* --------------------------------------------------------------------------
  * piano_hal_init
  * -------------------------------------------------------------------------- */
+void hal_pidSetEnabled(bool enabled)
+{
+    s_pidDisabled = !enabled;
+    if (enabled) {
+        s_targetMM     = 0.0f;
+        s_motorArrived = 1;
+        s_settledTicks = 0;
+        pid_reset();
+    }
+}
+
 void piano_hal_init(void)
 {
     s_pidPending   = false;
+    s_pidDisabled  = false;
     s_targetMM     = 0.0f;
     s_motorArrived = 1;
     s_settledTicks = 0;
@@ -139,8 +152,11 @@ void hal_runPendingPID(void)
     if (!s_pidPending) return;
     s_pidPending = false;
 
-    /* 1. Update encoder accumulator */
+    /* 1. Update encoder accumulator (always, even during homing) */
     motor_control_update_encoder();
+
+    /* If PID is disabled (homing), skip everything else so open-loop drive works */
+    if (s_pidDisabled) return;
 
     /* 2. Arrival check in mm */
     float currentMM = motor_control_get_linear_position();

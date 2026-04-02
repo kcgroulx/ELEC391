@@ -19,14 +19,14 @@ constexpr bool motor_pwm_active_low = true;
 constexpr int encoder_a_pin = 18;
 constexpr int encoder_b_pin = 19;
 
-constexpr int home_switch_pin = -1;
+constexpr int home_switch_pin = 2;
 constexpr int user_button_pin = -1;
-constexpr bool home_switch_active_level = LOW;
+constexpr bool home_switch_active_level = HIGH;
 constexpr bool user_button_active_level = LOW;
 constexpr bool finger_active_level = HIGH;
 
 constexpr size_t finger_count = 5U;
-constexpr int finger_pins[finger_count] = {21, 22, 23, 25, 26};
+constexpr int finger_pins[finger_count] = {14, 12, 27, 26, 25};
 
 constexpr float encoder_cpr_motor = 64.0f;
 constexpr float gear_ratio = 30.0f;

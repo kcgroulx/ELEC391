@@ -64,9 +64,14 @@ void loop(void)
     hal_runPendingPID();   /* keep motor under control between songs */
 
     /* --- Hardware tests --- */
-    test_fingersSolenoidOnly();   /* 1. Fire each solenoid without moving   */
-    //test_allFingers();            /* 2. Move to keys + press all 5 fingers  */
-    /* test_playScale(); */       /* 3. Original scale test (disabled)      */
+    //test_CmajorScale();           /* 1. C major scale C2–C3                 */
+    test_happyBirthday();         /* 2. Happy Birthday in C major           */
+    //test_solenoidPairs();         /* 3. Fire all 10 two-finger combos       */
+    //test_randomKeys();            /* 4. Random notes, all 5 fingers equally */
+    //test_limitSwitchThenPlay();   /* 3. Home via limit switch, then play    */
+    //test_fingersSolenoidOnly();   /* 4. Fire each solenoid without moving   */
+    //test_allFingers();            /* 5. Move to keys + press all 5 fingers  */
+    //SongPlayer_run();             /* 6. Receive MIDI over Serial and play   */
 
     while (true) { hal_runPendingPID(); }  /* stop after one pass */
 }

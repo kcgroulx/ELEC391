@@ -44,6 +44,9 @@ void piano_hal_init(void);
  * PID timing — two-step pattern to avoid ISR/flash crash
  * -------------------------------------------------------------------------- */
 
+/* Disable/enable PID — use during homing so open-loop drive works */
+void hal_pidSetEnabled(bool enabled);
+
 /* Called from ISR — ONLY sets a volatile flag. Safe. */
 void hal_flagPIDPending(void);
 

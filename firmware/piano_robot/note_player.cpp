@@ -162,26 +162,166 @@ int NotePlayer_playNoteByName(const char* name, uint32_t durationMs)
 
 
 /* --------------------------------------------------------------------------
- * NotePlayer_playSequence
+ * Finger picker with variety
+ *
+ * All finger options for a given key land on the same motor position, so
+ * travel cost can't differentiate them. Instead we:
+ *   1. Penalise reusing the same finger as last note (strong)
+ *   2. Penalise reusing the same finger as next note's best option (mild)
+ *   3. Among ties, prefer cycling through fingers in order
+ *
+ * This distributes usage across W1/W2/W3 for white keys and B1/B2 for black.
+ * -------------------------------------------------------------------------- */
+
+static FingerOption pickBestOption(const PianoKey* key,
+                                   float currentMM,
+                                   const PianoKey* nextKey,
+                                   Finger lastFinger)
+{
+    FingerOption best;
+    float bestCost = 1e9f;
+    uint8_t i;
+
+    best.finger          = FINGER_NONE;
+    best.motorPositionMM = -1.0f;
+    best.valid           = 0;
+
+    for (i = 0; i < MAX_FINGER_OPTIONS; i++) {
+        const FingerOption* opt = &key->options[i];
+        float cost, travelHere;
+
+        if (!FingerOption_isReachable(opt)) continue;
+
+        /* Cost to reach this option from current position */
+        travelHere = opt->motorPositionMM - currentMM;
+        if (travelHere < 0.0f) travelHere = -travelHere;
+
+        cost = travelHere;
+
+        /* Strong penalty for reusing the finger we just used */
+        if (opt->finger == lastFinger) {
+            cost += 100.0f;
+        }
+
+        /* Mild penalty if next note would want this same finger */
+        if (nextKey) {
+            uint8_t j;
+            for (j = 0; j < MAX_FINGER_OPTIONS; j++) {
+                const FingerOption* nopt = &nextKey->options[j];
+                if (!FingerOption_isReachable(nopt)) continue;
+                /* If the next note's first reachable option uses this finger,
+                 * add a small penalty so we leave it free for the next note */
+                if (nopt->finger == opt->finger) {
+                    cost += 10.0f;
+                }
+                break;  /* only check the first reachable next option */
+            }
+        }
+
+        if (cost < bestCost) {
+            bestCost = cost;
+            best     = *opt;
+        }
+    }
+    return best;
+}
+
+
+/* --------------------------------------------------------------------------
+ * playNoteWithOption — like NotePlayer_playNote but with a pre-chosen option
+ * -------------------------------------------------------------------------- */
+
+static int playNoteWithOption(const PianoKey* key, const FingerOption* choice,
+                              uint32_t durationMs)
+{
+    float currentMM = hal_motorGetPosition();
+    uint32_t holdMs;
+
+    if (!choice->valid || !FingerOption_isReachable(choice)) {
+        debugLog("playNote: no reachable finger option\r\n");
+        return 0;
+    }
+
+    /* Move motor */
+    logNoteHeader(key->name, key->midiNote, choice->motorPositionMM, currentMM);
+    {
+        char buf[48];
+        snprintf(buf, sizeof(buf), "  %-18s: %s\r\n", "finger",
+                 fingerName(choice->finger));
+        Serial.print(buf);
+    }
+    hal_motorSetTarget(choice->motorPositionMM);
+
+    /* Wait for arrival */
+    hal_motorWaitUntilArrived();
+    logArrival(choice->motorPositionMM);
+    if (HAL_SETTLE_TIME_MS > 0U) {
+        hal_delay(HAL_SETTLE_TIME_MS);
+    }
+
+    /* Press */
+    {
+        char buf[56];
+        snprintf(buf, sizeof(buf), "  [press finger %s  hold %lums]\r\n",
+                 fingerName(choice->finger), (unsigned long)durationMs);
+        Serial.print(buf);
+    }
+    hal_fingerPress((uint8_t)choice->finger);
+
+    /* Hold */
+    holdMs = (uint32_t)((float)durationMs * HAL_PRESS_DURATION_SCALE);
+    if (holdMs < HAL_MIN_PRESS_MS) holdMs = HAL_MIN_PRESS_MS;
+    hal_delay(holdMs);
+
+    /* Release */
+    debugLog("  [release]\r\n");
+    hal_fingerRelease((uint8_t)choice->finger);
+
+    return 1;
+}
+
+
+/* --------------------------------------------------------------------------
+ * NotePlayer_playSequence — with lookahead finger planning
  * -------------------------------------------------------------------------- */
 
 void NotePlayer_playSequence(const NoteEvent* events, uint16_t count)
 {
     uint16_t i;
+    float currentMM = hal_motorGetPosition();
+    Finger lastFinger = FINGER_NONE;
+
     for (i = 0; i < count; i++) {
         const NoteEvent* e = &events[i];
+        const PianoKey* key = keyByMidi(e->midiNote);
+        const PianoKey* nextKey = NULL;
+        FingerOption choice;
         int ok;
 
-        /* Play the note — blocks until finger releases */
-        ok = NotePlayer_playNote(e->midiNote, e->durationMs);
-
-        /* If unreachable, still wait the note's duration so rhythm is kept.
-         * The song keeps going even if a note is skipped. */
-        if (!ok) {
+        if (!key) {
             hal_delay((uint32_t)((float)e->durationMs * HAL_PRESS_DURATION_SCALE));
+            if (e->delayAfterMs > 0U) hal_delay(e->delayAfterMs);
+            continue;
         }
 
-        /* Gap / rest between notes */
+        /* Look ahead to next note */
+        if (i + 1 < count) {
+            nextKey = keyByMidi(events[i + 1].midiNote);
+        }
+
+        /* Pick finger — avoids reusing lastFinger */
+        choice = pickBestOption(key, currentMM, nextKey, lastFinger);
+
+        /* Play */
+        ok = playNoteWithOption(key, &choice, e->durationMs);
+        if (!ok) {
+            hal_delay((uint32_t)((float)e->durationMs * HAL_PRESS_DURATION_SCALE));
+        } else {
+            currentMM = choice.motorPositionMM;
+            lastFinger = choice.finger;
+        }
+
+        /* Gap between notes */
         if (e->delayAfterMs > 0U) {
             hal_delay(e->delayAfterMs);
         }
