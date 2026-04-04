@@ -29,7 +29,7 @@ extern "C" {
  * -------------------------------------------------------------------------- */
 // MUST be >= PID deadband in mm (8deg * 40mm/360 = 0.89mm). Use 1.5mm for margin.
 #define HAL_ARRIVAL_TOLERANCE_MM    1.5f
-#define HAL_SETTLE_TIME_MS          0U
+#define HAL_SETTLE_TIME_MS          50U
 #define HAL_PRESS_DURATION_SCALE    0.85f
 #define HAL_MIN_PRESS_MS            10U
 
@@ -43,9 +43,6 @@ void piano_hal_init(void);
 /* --------------------------------------------------------------------------
  * PID timing — two-step pattern to avoid ISR/flash crash
  * -------------------------------------------------------------------------- */
-
-/* Disable/enable PID — use during homing so open-loop drive works */
-void hal_pidSetEnabled(bool enabled);
 
 /* Called from ISR — ONLY sets a volatile flag. Safe. */
 void hal_flagPIDPending(void);

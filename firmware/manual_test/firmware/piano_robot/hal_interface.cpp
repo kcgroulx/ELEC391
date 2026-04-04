@@ -24,7 +24,6 @@
 #include "config.h"
 #include "pid.h"
 #include "Arduino.h"
-#include <math.h>
 #include <stdio.h>
 
 /* --------------------------------------------------------------------------
@@ -34,7 +33,6 @@
 /* Set by ISR (IRAM), cleared by hal_runPendingPID() (flash). Safe because
  * the ISR only writes and the main loop only reads-then-clears. */
 static volatile bool     s_pidPending   = false;
-static volatile bool     s_pidDisabled  = false;
 
 static volatile float    s_targetMM     = 0.0f;
 static volatile int      s_motorArrived = 0;
@@ -52,17 +50,6 @@ static uint8_t s_fingerMask = 0;
  * -------------------------------------------------------------------------- */
 static const uint32_t TELEMETRY_PERIOD_TICKS = 1000U;
 static uint32_t       s_telemetryTick = 0U;
-
-static bool hal_isStrikeReady(float currentMM)
-{
-    const float errorMM = fabsf(s_targetMM - currentMM);
-    const float angleErrorDeg = fabsf(pid_get_last_error_deg());
-    const float velocityDegPerSec = fabsf(pid_get_last_velocity_deg_per_sec());
-
-    return (errorMM <= HAL_ARRIVAL_TOLERANCE_MM)
-        && (angleErrorDeg <= pid_get_deadband_deg())
-        && (velocityDegPerSec <= pid_get_settle_velocity_deg_per_sec());
-}
 
 static void hal_printTelemetry(void)
 {
@@ -117,21 +104,9 @@ static void hal_printTelemetry(void)
 /* --------------------------------------------------------------------------
  * piano_hal_init
  * -------------------------------------------------------------------------- */
-void hal_pidSetEnabled(bool enabled)
-{
-    s_pidDisabled = !enabled;
-    if (enabled) {
-        s_targetMM     = 0.0f;
-        s_motorArrived = 1;
-        s_settledTicks = 0;
-        pid_reset();
-    }
-}
-
 void piano_hal_init(void)
 {
     s_pidPending   = false;
-    s_pidDisabled  = false;
     s_targetMM     = 0.0f;
     s_motorArrived = 1;
     s_settledTicks = 0;
@@ -164,19 +139,15 @@ void hal_runPendingPID(void)
     if (!s_pidPending) return;
     s_pidPending = false;
 
-    /* 1. Update encoder accumulator (always, even during homing) */
+    /* 1. Update encoder accumulator */
     motor_control_update_encoder();
 
-    /* If PID is disabled (homing), skip everything else so open-loop drive works */
-    if (s_pidDisabled) return;
-
-    /* 2. Compute the next control output */
+    /* 2. Arrival check in mm */
     float currentMM = motor_control_get_linear_position();
-    float command = pid_step(s_targetMM);
-    motor_control_set_motor_speed(command);
+    float errorMM   = s_targetMM - currentMM;
+    if (errorMM < 0.0f) errorMM = -errorMM;
 
-    /* 3. Strike-ready check: position + low velocity for several PID ticks */
-    if (hal_isStrikeReady(currentMM)) {
+    if (errorMM <= HAL_ARRIVAL_TOLERANCE_MM) {
         if (++s_settledTicks >= SETTLED_TICKS_REQUIRED) {
             s_settledTicks = 0;
             hal_motorNotifyArrived();
@@ -184,6 +155,10 @@ void hal_runPendingPID(void)
     } else {
         s_settledTicks = 0;
     }
+
+    /* 3. PID compute + motor write — both safe here (main context) */
+    float command = pid_step(s_targetMM);
+    motor_control_set_motor_speed(command);
 
     /* 4. Periodic telemetry — every TELEMETRY_PERIOD_TICKS ticks (1 s at 1 kHz) */
     if (++s_telemetryTick >= TELEMETRY_PERIOD_TICKS) {

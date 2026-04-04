@@ -199,11 +199,6 @@ float pid_get_last_error_deg(void)
     return lastErrorDeg;
 }
 
-float pid_get_last_velocity_deg_per_sec(void)
-{
-    return derivativeFiltered;
-}
-
 float pid_get_last_command(void)
 {
     return prevCommand;

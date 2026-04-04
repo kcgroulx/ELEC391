@@ -1,59 +1,34 @@
 /* midi_parser.c
  * ==========================================================================
  * Parses a Standard MIDI File (SMF) byte buffer into a NoteEvent array.
- *
- * MIDI FILE STRUCTURE (quick reference):
- *
- *   MThd chunk (14 bytes):
- *     4D 54 68 64        "MThd" magic
- *     00 00 00 06        chunk length (always 6)
- *     00 00              format (0=single, 1=multi, 2=pattern)
- *     00 NN              number of tracks
- *     00 TT              ticks per quarter note (PPQ)
- *
- *   MTrk chunk (per track):
- *     4D 54 72 6B        "MTrk" magic
- *     LL LL LL LL        chunk length in bytes
- *     [events...]
- *
- *   Each event:
- *     <delta_time>       variable-length encoded ticks since last event
- *     <status_byte>      0x8n=NoteOff 0x9n=NoteOn 0xAn-0xEn=other 0xFF=meta
- *     <data bytes...>
- *
- *   Meta event 0xFF 0x51 0x03 tt tt tt = tempo (microseconds per beat)
- *
- * CONVERSION: ticks → milliseconds
- *   ms = (ticks * tempo_us_per_beat) / (ppq * 1000)
- * ========================================================================== */
+ */
 
 #include "midi_parser.h"
 #include "piano_keymap.h"
 #include "hal_interface.h"
-#include "Arduino.h"        /* Serial, millis()                           */
+#include "Arduino.h"
 #include <string.h>
 #include <stdio.h>
-
-/* --------------------------------------------------------------------------
- * Internal reader — tracks position in the buffer safely
- * -------------------------------------------------------------------------- */
 
 typedef struct {
     const uint8_t* data;
     uint32_t       len;
     uint32_t       pos;
-    uint8_t        error;   /* set to 1 on overread */
+    uint8_t        error;
 } Reader;
 
-static void     Reader_init(Reader* r, const uint8_t* data, uint32_t len) {
-    r->data  = data;
-    r->len   = len;
-    r->pos   = 0;
-    r->error = 0;
+static void Reader_init(Reader* r, const uint8_t* data, uint32_t len) {
+    r->data = data;
+    r->len = len;
+    r->pos = 0U;
+    r->error = 0U;
 }
 
-static uint8_t  Reader_u8(Reader* r) {
-    if (r->pos >= r->len) { r->error = 1; return 0; }
+static uint8_t Reader_u8(Reader* r) {
+    if (r->pos >= r->len) {
+        r->error = 1U;
+        return 0U;
+    }
     return r->data[r->pos++];
 }
 
@@ -71,251 +46,336 @@ static uint32_t Reader_u32be(Reader* r) {
     return (a << 24) | (b << 16) | (c << 8) | d;
 }
 
-/* Read a MIDI variable-length quantity (1–4 bytes). */
 static uint32_t Reader_varlen(Reader* r) {
-    uint32_t val = 0;
-    uint8_t  b;
-    uint8_t  i;
-    for (i = 0; i < 4; i++) {
-        b    = Reader_u8(r);
-        val  = (val << 7) | (b & 0x7F);
-        if (!(b & 0x80)) break;
+    uint32_t val = 0U;
+    uint8_t i;
+    for (i = 0U; i < 4U; i++) {
+        uint8_t b = Reader_u8(r);
+        val = (val << 7) | (uint32_t)(b & 0x7FU);
+        if (!(b & 0x80U)) {
+            break;
+        }
     }
     return val;
 }
 
-/* Skip n bytes. */
 static void Reader_skip(Reader* r, uint32_t n) {
-    if (r->pos + n > r->len) { r->error = 1; r->pos = r->len; return; }
+    if (r->pos + n > r->len) {
+        r->error = 1U;
+        r->pos = r->len;
+        return;
+    }
     r->pos += n;
 }
 
-/* Save / restore position (used to rewind to track start). */
-static uint32_t Reader_tell(const Reader* r)        { return r->pos; }
-static void     Reader_seek(Reader* r, uint32_t pos) { r->pos = pos;  }
+static uint32_t Reader_tell(const Reader* r) { return r->pos; }
+static void Reader_seek(Reader* r, uint32_t pos) { r->pos = pos; }
 
-
-/* --------------------------------------------------------------------------
- * Tick-to-ms conversion state
- * -------------------------------------------------------------------------- */
+#define MAX_TEMPO_CHANGES 64U
+#define MAX_ACTIVE_NOTES 16U
 
 typedef struct {
-    uint32_t ppq;              /* ticks per quarter note from MThd          */
-    uint32_t tempo_us;         /* current tempo in microseconds per beat    */
-} TempoState;
+    uint32_t tick;
+    uint32_t tempo_us;
+} TempoChange;
 
-static void TempoState_init(TempoState* t, uint32_t ppq) {
-    t->ppq      = ppq;
-    t->tempo_us = 500000U;   /* default: 120 BPM = 500000 us/beat          */
-}
-
-/* Convert ticks to milliseconds using current tempo. */
-static uint32_t ticks_to_ms(uint32_t ticks, const TempoState* t) {
-    /* ms = ticks * tempo_us / (ppq * 1000)
-     * Use 64-bit intermediate to avoid overflow on long notes. */
-    uint64_t num = (uint64_t)ticks * (uint64_t)t->tempo_us;
-    uint64_t den = (uint64_t)t->ppq * 1000ULL;
-    return (uint32_t)(num / den);
-}
-
-
-/* --------------------------------------------------------------------------
- * Note-on tracking (needed to compute durations from note-off events)
- *
- * When we see a Note On, we store its tick time.
- * When we see the matching Note Off, we compute duration = off_tick - on_tick.
- * We track up to 16 simultaneous notes (more than enough for melody).
- * -------------------------------------------------------------------------- */
-
-#define MAX_ACTIVE_NOTES 16U
+typedef struct {
+    uint32_t    ppq;
+    TempoChange changes[MAX_TEMPO_CHANGES];
+    uint16_t    count;
+    uint8_t     overflow;
+} TempoMap;
 
 typedef struct {
     uint8_t  note;
     uint32_t onTick;
+    uint16_t outIndex;
     uint8_t  active;
 } ActiveNote;
 
 static ActiveNote s_active[MAX_ACTIVE_NOTES];
 
-static void activeNotes_clear(void) {
-    uint8_t i;
-    for (i = 0; i < MAX_ACTIVE_NOTES; i++) s_active[i].active = 0;
+static void TempoMap_init(TempoMap* t, uint32_t ppq) {
+    t->ppq = ppq;
+    t->count = 1U;
+    t->overflow = 0U;
+    t->changes[0].tick = 0U;
+    t->changes[0].tempo_us = 500000U;
 }
 
-static void activeNote_on(uint8_t note, uint32_t tick) {
+static void TempoMap_add(TempoMap* t, uint32_t tick, uint32_t tempo_us) {
+    if (t->count == 0U) {
+        TempoMap_init(t, t->ppq);
+    }
+
+    if (t->changes[t->count - 1U].tick == tick) {
+        t->changes[t->count - 1U].tempo_us = tempo_us;
+        return;
+    }
+
+    if (t->changes[t->count - 1U].tempo_us == tempo_us) {
+        return;
+    }
+
+    if (t->count >= MAX_TEMPO_CHANGES) {
+        t->overflow = 1U;
+        return;
+    }
+
+    t->changes[t->count].tick = tick;
+    t->changes[t->count].tempo_us = tempo_us;
+    t->count++;
+}
+
+static uint32_t TempoMap_tickToMs(const TempoMap* t, uint32_t tick) {
+    uint64_t totalUs = 0ULL;
+    uint32_t prevTick = 0U;
+    uint32_t currentTempoUs = 500000U;
+    uint16_t i;
+
+    if (t->count > 0U) {
+        currentTempoUs = t->changes[0].tempo_us;
+    }
+
+    for (i = 1U; i < t->count; i++) {
+        const uint32_t changeTick = t->changes[i].tick;
+        if (changeTick > tick) {
+            break;
+        }
+
+        totalUs += (uint64_t)(changeTick - prevTick) * (uint64_t)currentTempoUs;
+        prevTick = changeTick;
+        currentTempoUs = t->changes[i].tempo_us;
+    }
+
+    totalUs += (uint64_t)(tick - prevTick) * (uint64_t)currentTempoUs;
+    return (uint32_t)(totalUs / ((uint64_t)t->ppq * 1000ULL));
+}
+
+static uint32_t TempoMap_deltaToMs(const TempoMap* t, uint32_t startTick, uint32_t endTick) {
+    if (endTick <= startTick) {
+        return 0U;
+    }
+    return TempoMap_tickToMs(t, endTick) - TempoMap_tickToMs(t, startTick);
+}
+
+static void activeNotes_clear(void) {
     uint8_t i;
-    for (i = 0; i < MAX_ACTIVE_NOTES; i++) {
+    for (i = 0U; i < MAX_ACTIVE_NOTES; i++) {
+        s_active[i].active = 0U;
+    }
+}
+
+static void activeNote_on(uint8_t note, uint32_t tick, uint16_t outIndex) {
+    uint8_t i;
+    for (i = 0U; i < MAX_ACTIVE_NOTES; i++) {
         if (!s_active[i].active) {
-            s_active[i].note   = note;
+            s_active[i].note = note;
             s_active[i].onTick = tick;
-            s_active[i].active = 1;
+            s_active[i].outIndex = outIndex;
+            s_active[i].active = 1U;
             return;
         }
     }
-    /* Table full — overwrite oldest (slot 0) as fallback */
-    s_active[0].note   = note;
+
+    s_active[0].note = note;
     s_active[0].onTick = tick;
-    s_active[0].active = 1;
+    s_active[0].outIndex = outIndex;
+    s_active[0].active = 1U;
 }
 
-/* Returns 1 and writes on-tick if found, else returns 0. */
-static uint8_t activeNote_off(uint8_t note, uint32_t* onTickOut) {
+static uint8_t activeNote_off(uint8_t note, uint32_t* onTickOut, uint16_t* outIndexOut) {
     uint8_t i;
-    for (i = 0; i < MAX_ACTIVE_NOTES; i++) {
+    for (i = 0U; i < MAX_ACTIVE_NOTES; i++) {
         if (s_active[i].active && s_active[i].note == note) {
-            s_active[i].active = 0;
+            s_active[i].active = 0U;
             if (onTickOut) *onTickOut = s_active[i].onTick;
+            if (outIndexOut) *outIndexOut = s_active[i].outIndex;
             return 1U;
         }
     }
     return 0U;
 }
 
-
-/* --------------------------------------------------------------------------
- * Track parser
- * Reads one MTrk chunk from position r->pos and appends NoteEvents.
- * -------------------------------------------------------------------------- */
-
-static void parseTrack(Reader*          r,
-                       uint32_t         trackLen,
-                       TempoState*      tempo,
-                       NoteEvent*       outEvents,
-                       uint16_t         maxEvents,
-                       MidiParseResult* result)
+static uint8_t parseTrack(Reader*          r,
+                          uint32_t         trackLen,
+                          TempoMap*        tempoMap,
+                          NoteEvent*       outEvents,
+                          uint16_t         maxEvents,
+                          MidiParseResult* result,
+                          uint8_t          captureNotes,
+                          uint8_t          captureTempo)
 {
-    uint32_t trackEnd   = Reader_tell(r) + trackLen;
-    uint32_t currentTick = 0;
-    uint8_t  runningStatus = 0;
+    uint32_t trackEnd = Reader_tell(r) + trackLen;
+    uint32_t currentTick = 0U;
+    uint8_t runningStatus = 0U;
+    uint32_t noteOnTicks[MIDI_MAX_NOTES];
+    uint32_t noteOffTicks[MIDI_MAX_NOTES];
+    uint8_t noteComplete[MIDI_MAX_NOTES];
+    uint16_t provisionalCount = 0U;
+    uint16_t finalCount = 0U;
+    uint16_t trackMaxEvents = maxEvents;
+    uint8_t bufferFull = 0U;
+    uint16_t i;
+
+    if (trackEnd < Reader_tell(r) || trackEnd > r->len) {
+        result->status = MIDI_ERR_CORRUPT;
+        return 0U;
+    }
+
+    if (trackMaxEvents > MIDI_MAX_NOTES) {
+        trackMaxEvents = MIDI_MAX_NOTES;
+    }
 
     activeNotes_clear();
+    memset(noteComplete, 0, sizeof(noteComplete));
 
     while (Reader_tell(r) < trackEnd && !r->error) {
+        uint8_t type;
 
-        /* ── Delta time ──────────────────────────────────────────────────── */
-        uint32_t delta = Reader_varlen(r);
-        currentTick += delta;
-
-        /* ── Status byte ─────────────────────────────────────────────────── */
-        uint8_t statusByte = r->data[r->pos];   /* peek */
-
-        if (statusByte & 0x80) {
-            runningStatus = statusByte;
-            r->pos++;                            /* consume it */
+        currentTick += Reader_varlen(r);
+        if (r->error) {
+            result->status = MIDI_ERR_CORRUPT;
+            return 0U;
         }
-        /* else: running status — reuse last status, don't advance */
 
-        uint8_t type    = runningStatus & 0xF0;
-        /* uint8_t channel = runningStatus & 0x0F; (unused for now) */
+        if (Reader_tell(r) >= trackEnd || Reader_tell(r) >= r->len) {
+            result->status = MIDI_ERR_CORRUPT;
+            return 0U;
+        }
 
-        /* ── Note Off (0x8n) ─────────────────────────────────────────────── */
-        if (type == 0x80) {
-            uint8_t note     = Reader_u8(r);
+        if (r->data[r->pos] & 0x80U) {
+            runningStatus = r->data[r->pos];
+            r->pos++;
+        }
+
+        if (runningStatus == 0U) {
+            result->status = MIDI_ERR_CORRUPT;
+            return 0U;
+        }
+
+        type = runningStatus & 0xF0U;
+
+        if (type == 0x80U || type == 0x90U) {
+            uint8_t note = Reader_u8(r);
             uint8_t velocity = Reader_u8(r);
-            uint32_t onTick;
-            (void)velocity;
 
-            if (activeNote_off(note, &onTick) && result->noteCount < maxEvents) {
-                uint32_t durMs = ticks_to_ms(currentTick - onTick, tempo);
-                if (durMs < 10U) durMs = 10U;   /* clamp very short notes    */
-
-                /* delayAfter filled in post-process pass below */
-                outEvents[result->noteCount].midiNote     = note;
-                outEvents[result->noteCount].durationMs   = durMs;
-                outEvents[result->noteCount].delayAfterMs = 0;
-                result->noteCount++;
+            if (r->error) {
+                result->status = MIDI_ERR_CORRUPT;
+                return 0U;
             }
-        }
 
-        /* ── Note On (0x9n) ──────────────────────────────────────────────── */
-        else if (type == 0x90) {
-            uint8_t note     = Reader_u8(r);
-            uint8_t velocity = Reader_u8(r);
-
-            if (velocity == 0) {
-                /* Note On with velocity 0 is equivalent to Note Off */
-                uint32_t onTick;
-                if (activeNote_off(note, &onTick) && result->noteCount < maxEvents) {
-                    uint32_t durMs = ticks_to_ms(currentTick - onTick, tempo);
-                    if (durMs < 10U) durMs = 10U;
-
-                    outEvents[result->noteCount].midiNote     = note;
-                    outEvents[result->noteCount].durationMs   = durMs;
-                    outEvents[result->noteCount].delayAfterMs = 0;
-                    result->noteCount++;
-                }
-            } else {
-                /* Check if note is within robot's range */
+            if (type == 0x90U && velocity > 0U) {
                 if (note >= MIDI_NOTE_MIN && note <= MIDI_NOTE_MAX) {
-                    activeNote_on(note, currentTick);
+                    if (captureNotes) {
+                        if (provisionalCount < trackMaxEvents) {
+                            outEvents[provisionalCount].midiNote = note;
+                            outEvents[provisionalCount].durationMs = 0U;
+                            outEvents[provisionalCount].delayAfterMs = 0U;
+                            noteOnTicks[provisionalCount] = currentTick;
+                            noteOffTicks[provisionalCount] = currentTick;
+                            noteComplete[provisionalCount] = 0U;
+                            activeNote_on(note, currentTick, provisionalCount);
+                            provisionalCount++;
+                        } else {
+                            bufferFull = 1U;
+                            activeNote_on(note, currentTick, UINT16_MAX);
+                        }
+                    }
                 } else {
                     result->notesSkipped++;
                 }
+            } else if (captureNotes) {
+                uint32_t onTick;
+                uint16_t outIndex;
+                if (activeNote_off(note, &onTick, &outIndex) && outIndex < trackMaxEvents) {
+                    noteOffTicks[outIndex] = currentTick;
+                    noteComplete[outIndex] = 1U;
+                }
             }
         }
+        else if (type == 0xA0U || type == 0xB0U || type == 0xE0U) {
+            Reader_skip(r, 2U);
+        }
+        else if (type == 0xC0U || type == 0xD0U) {
+            Reader_skip(r, 1U);
+        }
+        else if (runningStatus == 0xFFU) {
+            uint8_t metaType = Reader_u8(r);
+            uint32_t metaLen = Reader_varlen(r);
 
-        /* ── Polyphonic key pressure (0xAn) — 2 data bytes, skip ─────────── */
-        else if (type == 0xA0) { Reader_skip(r, 2); }
-
-        /* ── Control change (0xBn) — 2 data bytes, skip ─────────────────── */
-        else if (type == 0xB0) { Reader_skip(r, 2); }
-
-        /* ── Program change (0xCn) — 1 data byte, skip ──────────────────── */
-        else if (type == 0xC0) { Reader_skip(r, 1); }
-
-        /* ── Channel pressure (0xDn) — 1 data byte, skip ────────────────── */
-        else if (type == 0xD0) { Reader_skip(r, 1); }
-
-        /* ── Pitch bend (0xEn) — 2 data bytes, skip ─────────────────────── */
-        else if (type == 0xE0) { Reader_skip(r, 2); }
-
-        /* ── Meta event (0xFF) ───────────────────────────────────────────── */
-        else if (runningStatus == 0xFF) {
-            uint8_t  metaType = Reader_u8(r);
-            uint32_t metaLen  = Reader_varlen(r);
-
-            /* Tempo change: 0xFF 0x51 0x03 tt tt tt */
-            if (metaType == 0x51 && metaLen == 3) {
+            if (metaType == 0x51U && metaLen == 3U) {
                 uint32_t t0 = Reader_u8(r);
                 uint32_t t1 = Reader_u8(r);
                 uint32_t t2 = Reader_u8(r);
-                tempo->tempo_us = (t0 << 16) | (t1 << 8) | t2;
+                if (captureTempo) {
+                    TempoMap_add(tempoMap, currentTick, (t0 << 16) | (t1 << 8) | t2);
+                }
             } else {
                 Reader_skip(r, metaLen);
             }
 
-            /* End of track meta event */
-            if (metaType == 0x2F) break;
+            if (metaType == 0x2FU) {
+                break;
+            }
         }
-
-        /* ── SysEx (0xF0 / 0xF7) — skip ─────────────────────────────────── */
-        else if (runningStatus == 0xF0 || runningStatus == 0xF7) {
+        else if (runningStatus == 0xF0U || runningStatus == 0xF7U) {
             uint32_t sysexLen = Reader_varlen(r);
             Reader_skip(r, sysexLen);
         }
 
         if (r->error) {
             result->status = MIDI_ERR_CORRUPT;
-            return;
+            return 0U;
         }
     }
 
-    /* Seek to exact track end in case we stopped early (end-of-track meta) */
     Reader_seek(r, trackEnd);
 
-    /* ── Post-process: fill in delayAfterMs ──────────────────────────────────
-     * delayAfterMs = gap between end of this note and start of next note.
-     * We stored events in order of Note Off, so we need the Note On times.
-     * Simple approach: delayAfter[i] = max(0, onTime[i+1] - offTime[i])
-     * Since we don't store onTick in NoteEvent we use 0 for now — the
-     * position planner in Step 4 will handle inter-note gaps properly.
-     * For Step 2/3 testing, leaving delayAfterMs = 0 is fine. */
+    if (!captureNotes) {
+        if (tempoMap->overflow && result->status == MIDI_OK) {
+            result->status = MIDI_ERR_FORMAT;
+        }
+        return 1U;
+    }
+
+    for (i = 0U; i < provisionalCount; i++) {
+        if (!noteComplete[i]) {
+            continue;
+        }
+
+        if (finalCount != i) {
+            outEvents[finalCount] = outEvents[i];
+            noteOnTicks[finalCount] = noteOnTicks[i];
+            noteOffTicks[finalCount] = noteOffTicks[i];
+        }
+        finalCount++;
+    }
+
+    result->noteCount = finalCount;
+    for (i = 0U; i < finalCount; i++) {
+        uint32_t durationMs = TempoMap_deltaToMs(tempoMap, noteOnTicks[i], noteOffTicks[i]);
+        if (durationMs < 10U) {
+            durationMs = 10U;
+        }
+        outEvents[i].durationMs = durationMs;
+        outEvents[i].delayAfterMs = 0U;
+        if ((i + 1U) < finalCount) {
+            outEvents[i].delayAfterMs = TempoMap_deltaToMs(
+                tempoMap, noteOffTicks[i], noteOnTicks[i + 1U]);
+        }
+    }
+
+    if (tempoMap->overflow && result->status == MIDI_OK) {
+        result->status = MIDI_ERR_FORMAT;
+    }
+
+    if (bufferFull && result->status == MIDI_OK) {
+        result->status = MIDI_ERR_BUF_FULL;
+    }
+
+    return 1U;
 }
-
-
-/* --------------------------------------------------------------------------
- * Midi_parseBuffer — main entry point
- * -------------------------------------------------------------------------- */
 
 void Midi_parseBuffer(const uint8_t*   buf,
                       uint32_t         len,
@@ -323,164 +383,163 @@ void Midi_parseBuffer(const uint8_t*   buf,
                       uint16_t         maxEvents,
                       MidiParseResult* result)
 {
-    Reader      r;
-    TempoState  tempo;
-    uint16_t    numTracks;
-    uint16_t    ppq;
-    uint16_t    format;
-    uint16_t    trackIndex;
-    uint32_t    chunkLen;
-    uint8_t     magic[4];
-    uint8_t     i;
+    Reader     r;
+    TempoMap   tempoMap;
+    uint16_t   numTracks;
+    uint16_t   ppq;
+    uint16_t   format;
+    uint16_t   trackIndex;
+    uint8_t    magic[4];
+    uint16_t   seenTracks;
+    uint8_t    foundTarget = 0U;
 
-    /* Initialise result */
-    result->status       = MIDI_OK;
-    result->noteCount    = 0;
-    result->notesSkipped = 0;
-    result->durationMs   = 0;
+    result->status = MIDI_OK;
+    result->noteCount = 0U;
+    result->notesSkipped = 0U;
+    result->durationMs = 0U;
 
     Reader_init(&r, buf, len);
 
-    /* ── Read MThd header ─────────────────────────────────────────────────── */
-    magic[0] = Reader_u8(&r); magic[1] = Reader_u8(&r);
-    magic[2] = Reader_u8(&r); magic[3] = Reader_u8(&r);
-
-    if (magic[0] != 'M' || magic[1] != 'T' ||
-        magic[2] != 'h' || magic[3] != 'd') {
+    magic[0] = Reader_u8(&r);
+    magic[1] = Reader_u8(&r);
+    magic[2] = Reader_u8(&r);
+    magic[3] = Reader_u8(&r);
+    if (magic[0] != 'M' || magic[1] != 'T' || magic[2] != 'h' || magic[3] != 'd') {
         result->status = MIDI_ERR_NOT_MIDI;
         return;
     }
 
-    Reader_u32be(&r);                   /* header length — always 6, skip   */
-    format    = Reader_u16be(&r);
+    (void)Reader_u32be(&r);
+    format = Reader_u16be(&r);
     numTracks = Reader_u16be(&r);
-    ppq       = Reader_u16be(&r);
+    ppq = Reader_u16be(&r);
 
-    if (format == 2) {
+    if (r.error || ppq == 0U) {
+        result->status = MIDI_ERR_CORRUPT;
+        return;
+    }
+
+    if (format == 2U) {
         result->status = MIDI_ERR_FORMAT;
         return;
     }
 
-    TempoState_init(&tempo, (uint32_t)ppq);
+    TempoMap_init(&tempoMap, (uint32_t)ppq);
 
-    /* ── Determine which track to parse ──────────────────────────────────── */
-    /* Format 0: single track, always index 0.
-     * Format 1: track 0 is tempo map, track 1 is first instrument (melody).
-     * MIDI_TRACK_INDEX is set in the header — default 1 for format 1. */
-    trackIndex = (format == 0) ? 0 : MIDI_TRACK_INDEX;
-
+    trackIndex = (format == 0U) ? 0U : MIDI_TRACK_INDEX;
     if (trackIndex >= numTracks) {
-        /* Requested track doesn't exist — fall back to track 0 */
-        trackIndex = 0;
+        trackIndex = 0U;
     }
 
-    /* ── For format 1: parse track 0 first to pick up tempo changes ──────── */
-    if (format == 1 && trackIndex > 0) {
-        /* Find and parse track 0 (tempo map only, discard notes) */
-        for (i = 0; i < numTracks; i++) {
-            magic[0] = Reader_u8(&r); magic[1] = Reader_u8(&r);
-            magic[2] = Reader_u8(&r); magic[3] = Reader_u8(&r);
-            chunkLen  = Reader_u32be(&r);
+    if (format == 1U && trackIndex > 0U) {
+        Reader_seek(&r, 14U);
+        r.error = 0U;
+        seenTracks = 0U;
+        while (!r.error && Reader_tell(&r) < len && seenTracks < numTracks) {
+            uint32_t chunkLen;
+            uint32_t chunkStart;
 
-            if (magic[0] == 'M' && magic[1] == 'T' &&
-                magic[2] == 'r' && magic[3] == 'k') {
-                if (i == 0) {
-                    /* Parse tempo track but throw away note output */
-                    NoteEvent  tempEvents[8];
-                    MidiParseResult tempResult;
-                    tempResult.status       = MIDI_OK;
-                    tempResult.noteCount    = 0;
-                    tempResult.notesSkipped = 0;
-                    tempResult.durationMs   = 0;
-                    parseTrack(&r, chunkLen, &tempo,
-                               tempEvents, 8, &tempResult);
+            magic[0] = Reader_u8(&r);
+            magic[1] = Reader_u8(&r);
+            magic[2] = Reader_u8(&r);
+            magic[3] = Reader_u8(&r);
+            chunkLen = Reader_u32be(&r);
+            if (r.error) {
+                break;
+            }
+
+            chunkStart = Reader_tell(&r);
+            if (chunkStart + chunkLen < chunkStart || chunkStart + chunkLen > len) {
+                result->status = MIDI_ERR_CORRUPT;
+                return;
+            }
+
+            if (magic[0] == 'M' && magic[1] == 'T' && magic[2] == 'r' && magic[3] == 'k') {
+                if (seenTracks == 0U) {
+                    if (!parseTrack(&r, chunkLen, &tempoMap, outEvents, 0U, result, 0U, 1U)) {
+                        return;
+                    }
                 } else {
                     Reader_skip(&r, chunkLen);
                 }
-                if (i + 1 == trackIndex) break;
+                seenTracks++;
             } else {
-                /* Unknown chunk — skip it */
                 Reader_skip(&r, chunkLen);
             }
-            if (r.error) { result->status = MIDI_ERR_CORRUPT; return; }
+        }
+
+        if (r.error) {
+            result->status = MIDI_ERR_CORRUPT;
+            return;
         }
     }
 
-    /* ── Seek to target track ─────────────────────────────────────────────── */
-    /* Re-scan from after MThd to find the Nth MTrk chunk. */
-    r.pos  = 14U;   /* skip MThd (4 magic + 4 len + 6 data) */
-    r.error = 0;
+    Reader_seek(&r, 14U);
+    r.error = 0U;
+    seenTracks = 0U;
+    while (!r.error && Reader_tell(&r) < len && seenTracks < numTracks) {
+        uint32_t chunkLen;
+        uint32_t chunkStart;
 
-    for (i = 0; i <= trackIndex; i++) {
-        magic[0] = Reader_u8(&r); magic[1] = Reader_u8(&r);
-        magic[2] = Reader_u8(&r); magic[3] = Reader_u8(&r);
-        chunkLen  = Reader_u32be(&r);
+        magic[0] = Reader_u8(&r);
+        magic[1] = Reader_u8(&r);
+        magic[2] = Reader_u8(&r);
+        magic[3] = Reader_u8(&r);
+        chunkLen = Reader_u32be(&r);
+        if (r.error) {
+            break;
+        }
 
-        if (r.error) { result->status = MIDI_ERR_CORRUPT; return; }
+        chunkStart = Reader_tell(&r);
+        if (chunkStart + chunkLen < chunkStart || chunkStart + chunkLen > len) {
+            result->status = MIDI_ERR_CORRUPT;
+            return;
+        }
 
-        if (magic[0] != 'M' || magic[1] != 'T' ||
-            magic[2] != 'r' || magic[3] != 'k') {
-            /* Unknown chunk — skip and retry */
+        if (magic[0] != 'M' || magic[1] != 'T' || magic[2] != 'r' || magic[3] != 'k') {
             Reader_skip(&r, chunkLen);
-            i--;   /* don't count this as a track */
             continue;
         }
 
-        if (i < trackIndex) {
-            Reader_skip(&r, chunkLen);   /* skip unwanted tracks */
+        if (seenTracks == trackIndex) {
+            foundTarget = 1U;
+            if (!parseTrack(&r, chunkLen, &tempoMap, outEvents, maxEvents, result, 1U, 1U)) {
+                return;
+            }
+            break;
         }
+
+        Reader_skip(&r, chunkLen);
+        seenTracks++;
     }
 
-    if (r.error) { result->status = MIDI_ERR_CORRUPT; return; }
-
-    /* ── Parse the target track ───────────────────────────────────────────── */
-    parseTrack(&r, chunkLen, &tempo, outEvents, maxEvents, result);
-
-    if (result->noteCount >= maxEvents) {
-        result->status = MIDI_ERR_BUF_FULL;
+    if (r.error) {
+        result->status = MIDI_ERR_CORRUPT;
+        return;
     }
 
-    /* Estimate total duration from last note */
-    if (result->noteCount > 0) {
-        uint32_t total = 0;
+    if (!foundTarget) {
+        result->status = MIDI_ERR_NO_TRACK;
+        return;
+    }
+
+    if (result->noteCount > 0U) {
+        uint32_t total = 0U;
         uint16_t n;
-        for (n = 0; n < result->noteCount; n++)
+        for (n = 0U; n < result->noteCount; n++) {
             total += outEvents[n].durationMs + outEvents[n].delayAfterMs;
+        }
         result->durationMs = total;
     }
 }
 
-
-/* --------------------------------------------------------------------------
- * Midi_receiveUART
- * --------------------------------------------------------------------------
- * Waits for a 4-byte big-endian length header then receives that many bytes.
- * Times out after timeoutMs ms.
- * -------------------------------------------------------------------------- */
-
 uint32_t Midi_receiveUART(uint8_t* buf, uint32_t bufSize, uint32_t timeoutMs)
 {
-    /* -----------------------------------------------------------------------
-     * Receive with an inactivity timeout, not a whole-transfer timeout.
-     *
-     * The old implementation read one byte at a time and ran PID work before
-     * every byte. That can fall behind the UART stream on larger files and
-     * overflow the RX buffer even though the sender is operating correctly.
-     *
-     * This version:
-     *   1. Waits for the 4-byte length header byte-by-byte.
-     *   2. Drains the file payload in chunks whenever bytes are available.
-     *   3. Resets the timeout after every successful read so timeoutMs means
-     *      "no bytes arrived for this long", not "entire transfer must finish
-     *      within this long".
-     * ----------------------------------------------------------------------- */
-
     uint32_t deadline = (uint32_t)millis() + timeoutMs;
     uint32_t fileLen;
     uint32_t received;
     int b0, b1, b2, b3;
 
-    /* Read one byte before deadline, -1 on timeout */
     #define READ_BYTE(var) \
         do { \
             (var) = -1; \
@@ -495,18 +554,19 @@ uint32_t Midi_receiveUART(uint8_t* buf, uint32_t bufSize, uint32_t timeoutMs)
             if ((var) < 0) return 0; \
         } while(0)
 
-    /* 4-byte big-endian length header */
-    READ_BYTE(b0); READ_BYTE(b1); READ_BYTE(b2); READ_BYTE(b3);
+    READ_BYTE(b0);
+    READ_BYTE(b1);
+    READ_BYTE(b2);
+    READ_BYTE(b3);
 
     fileLen = ((uint32_t)b0 << 24)
             | ((uint32_t)b1 << 16)
             | ((uint32_t)b2 <<  8)
             | ((uint32_t)b3);
 
-    if (fileLen == 0 || fileLen > bufSize) return 0;
+    if (fileLen == 0U || fileLen > bufSize) return 0U;
 
-    /* Read file bytes */
-    received = 0;
+    received = 0U;
     while (received < fileLen) {
         int available = Serial.available();
         if (available > 0) {
@@ -523,18 +583,13 @@ uint32_t Midi_receiveUART(uint8_t* buf, uint32_t bufSize, uint32_t timeoutMs)
             }
         }
 
-        if ((int32_t)(deadline - (uint32_t)millis()) <= 0) return 0;
+        if ((int32_t)(deadline - (uint32_t)millis()) <= 0) return 0U;
         hal_runPendingPID();
     }
 
     #undef READ_BYTE
     return fileLen;
 }
-
-
-/* --------------------------------------------------------------------------
- * Midi_receiveAndParse
- * -------------------------------------------------------------------------- */
 
 void Midi_receiveAndParse(uint8_t*         uartBuf,
                           uint32_t         uartBufSize,
@@ -543,18 +598,16 @@ void Midi_receiveAndParse(uint8_t*         uartBuf,
                           MidiParseResult* result)
 {
     uint32_t len = Midi_receiveUART(uartBuf, uartBufSize, MIDI_UART_TIMEOUT_MS);
-    if (len == 0) {
-        result->status    = MIDI_ERR_UART;
-        result->noteCount = 0;
+    if (len == 0U) {
+        result->status = MIDI_ERR_UART;
+        result->noteCount = 0U;
+        result->notesSkipped = 0U;
+        result->durationMs = 0U;
         return;
     }
+
     Midi_parseBuffer(uartBuf, len, outEvents, maxEvents, result);
 }
-
-
-/* --------------------------------------------------------------------------
- * Midi_printResult — debug helper
- * -------------------------------------------------------------------------- */
 
 void Midi_printResult(const MidiParseResult* result)
 {
@@ -562,14 +615,14 @@ void Midi_printResult(const MidiParseResult* result)
     const char* statusStr;
 
     switch (result->status) {
-        case MIDI_OK:           statusStr = "OK";           break;
-        case MIDI_ERR_NOT_MIDI: statusStr = "NOT_MIDI";     break;
-        case MIDI_ERR_FORMAT:   statusStr = "BAD_FORMAT";   break;
-        case MIDI_ERR_NO_TRACK: statusStr = "NO_TRACK";     break;
-        case MIDI_ERR_CORRUPT:  statusStr = "CORRUPT";      break;
-        case MIDI_ERR_BUF_FULL: statusStr = "BUF_FULL";     break;
-        case MIDI_ERR_UART:     statusStr = "UART_FAIL";    break;
-        default:                statusStr = "UNKNOWN";       break;
+        case MIDI_OK:           statusStr = "OK";        break;
+        case MIDI_ERR_NOT_MIDI: statusStr = "NOT_MIDI";  break;
+        case MIDI_ERR_FORMAT:   statusStr = "BAD_FORMAT"; break;
+        case MIDI_ERR_NO_TRACK: statusStr = "NO_TRACK";  break;
+        case MIDI_ERR_CORRUPT:  statusStr = "CORRUPT";   break;
+        case MIDI_ERR_BUF_FULL: statusStr = "BUF_FULL";  break;
+        case MIDI_ERR_UART:     statusStr = "UART_FAIL"; break;
+        default:                statusStr = "UNKNOWN";   break;
     }
 
     snprintf(buf, sizeof(buf),

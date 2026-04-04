@@ -9,9 +9,10 @@
  *      (greedy — picks least travel for THIS note only.)
  *   3. Command the motor to that position.
  *   4. Block until the PID has settled (hal_motorWaitUntilArrived).
- *   5. Press the finger as soon as the carriage is strike-ready.
- *   6. Hold for durationMs * PRESS_DURATION_SCALE.
- *   7. Release the finger.
+ *   5. Wait an extra SETTLE_TIME_MS for vibration to die down.
+ *   6. Press the finger.
+ *   7. Hold for durationMs * PRESS_DURATION_SCALE.
+ *   8. Release the finger.
  *
  * NOTE: bestOption() is greedy and only looks at the current note.
  * Step 4 will replace this with a lookahead planner.
@@ -26,49 +27,32 @@
 #include "Arduino.h"
 #include <stdio.h>
 
-#define NOTE_PLAYER_ENABLE_DEBUG 0
-
 /* --------------------------------------------------------------------------
  * Internal helpers
  * -------------------------------------------------------------------------- */
 
 static void debugLog(const char* msg) {
-#if NOTE_PLAYER_ENABLE_DEBUG
     Serial.print(msg);
-#else
-    (void)msg;
-#endif
 }
 
 /* Print a single labelled float on one line, e.g. "  pos_mm : 47.30\r\n" */
 static void logFloat(const char* label, float val) {
-#if NOTE_PLAYER_ENABLE_DEBUG
     char buf[64];
     snprintf(buf, sizeof(buf), "  %-18s: %.2f\r\n", label, (double)val);
     Serial.print(buf);
-#else
-    (void)label;
-    (void)val;
-#endif
 }
 
 /* Print a single labelled int on one line */
 static void logInt(const char* label, int32_t val) {
-#if NOTE_PLAYER_ENABLE_DEBUG
     char buf[64];
     snprintf(buf, sizeof(buf), "  %-18s: %ld\r\n", label, (long)val);
     Serial.print(buf);
-#else
-    (void)label;
-    (void)val;
-#endif
 }
 
 /* Print a divider + note header before each move */
 static void logNoteHeader(const char* noteName, uint8_t midiNote,
                           float targetMM, float currentMM)
 {
-#if NOTE_PLAYER_ENABLE_DEBUG
     char buf[80];
     snprintf(buf, sizeof(buf),
         "\r\n--- NOTE %s (midi %u) ---\r\n", noteName, (unsigned)midiNote);
@@ -77,18 +61,11 @@ static void logNoteHeader(const char* noteName, uint8_t midiNote,
     logFloat("current_mm", currentMM);
     logFloat("travel_mm",  targetMM - currentMM);
     logInt  ("encoder_cnt", platform_io_get_encoder_count());
-#else
-    (void)noteName;
-    (void)midiNote;
-    (void)targetMM;
-    (void)currentMM;
-#endif
 }
 
 /* Print state after the motor has settled */
 static void logArrival(float targetMM)
 {
-#if NOTE_PLAYER_ENABLE_DEBUG
     float actualMM  = hal_motorGetPosition();
     float errorMM   = targetMM - actualMM;
     Serial.print("  [arrived]\r\n");
@@ -99,25 +76,6 @@ static void logArrival(float targetMM)
     logFloat("pid_cmd",         pid_get_last_command());
     logFloat("pid_target_deg",  pid_get_last_target_angle_deg());
     logFloat("pid_actual_deg",  pid_get_last_angle_deg());
-#else
-    (void)targetMM;
-#endif
-}
-
-static void waitUntilTick(uint32_t targetTick)
-{
-    while ((int32_t)(targetTick - hal_getTick()) > 0) {
-        hal_runPendingPID();
-    }
-}
-
-static uint32_t scaledHoldMs(uint32_t durationMs)
-{
-    uint32_t holdMs = (uint32_t)((float)durationMs * HAL_PRESS_DURATION_SCALE);
-    if (holdMs < HAL_MIN_PRESS_MS) {
-        holdMs = HAL_MIN_PRESS_MS;
-    }
-    return holdMs;
 }
 
 
@@ -153,7 +111,7 @@ int NotePlayer_playNote(uint8_t midiNote, uint32_t durationMs)
     {
         char buf[48];
         snprintf(buf, sizeof(buf), "  %-18s: %d\r\n", "finger", (int)choice.finger);
-        debugLog(buf);
+        Serial.print(buf);
     }
     hal_motorSetTarget(choice.motorPositionMM);
 
@@ -171,12 +129,13 @@ int NotePlayer_playNote(uint8_t midiNote, uint32_t durationMs)
         char buf[56];
         snprintf(buf, sizeof(buf), "  [press finger %d  hold %lums]\r\n",
                  (int)choice.finger, (unsigned long)durationMs);
-        debugLog(buf);
+        Serial.print(buf);
     }
     hal_fingerPress((uint8_t)choice.finger);
 
     /* ── 7. Hold ─────────────────────────────────────────────────────────── */
-    holdMs = scaledHoldMs(durationMs);
+    holdMs = (uint32_t)((float)durationMs * HAL_PRESS_DURATION_SCALE);
+    if (holdMs < HAL_MIN_PRESS_MS) holdMs = HAL_MIN_PRESS_MS;
     hal_delay(holdMs);
 
     /* ── 8. Release ──────────────────────────────────────────────────────── */
@@ -203,191 +162,29 @@ int NotePlayer_playNoteByName(const char* name, uint32_t durationMs)
 
 
 /* --------------------------------------------------------------------------
- * Finger picker with variety
- *
- * All finger options for a given key land on the same motor position, so
- * travel cost can't differentiate them. Instead we:
- *   1. Penalise reusing the same finger as last note (strong)
- *   2. Penalise reusing the same finger as next note's best option (mild)
- *   3. Among ties, prefer cycling through fingers in order
- *
- * This distributes usage across W1/W2/W3 for white keys and B1/B2 for black.
- * -------------------------------------------------------------------------- */
-
-static FingerOption pickBestOption(const PianoKey* key,
-                                   float currentMM,
-                                   const PianoKey* nextKey,
-                                   Finger lastFinger)
-{
-    FingerOption best;
-    float bestCost = 1e9f;
-    uint8_t i;
-
-    best.finger          = FINGER_NONE;
-    best.motorPositionMM = -1.0f;
-    best.valid           = 0;
-
-    for (i = 0; i < MAX_FINGER_OPTIONS; i++) {
-        const FingerOption* opt = &key->options[i];
-        float cost, travelHere;
-
-        if (!FingerOption_isReachable(opt)) continue;
-
-        /* Cost to reach this option from current position */
-        travelHere = opt->motorPositionMM - currentMM;
-        if (travelHere < 0.0f) travelHere = -travelHere;
-
-        cost = travelHere;
-
-        /* Strong penalty for reusing the finger we just used */
-        if (opt->finger == lastFinger) {
-            cost += 100.0f;
-        }
-
-        /* Mild penalty if next note would want this same finger */
-        if (nextKey) {
-            uint8_t j;
-            for (j = 0; j < MAX_FINGER_OPTIONS; j++) {
-                const FingerOption* nopt = &nextKey->options[j];
-                if (!FingerOption_isReachable(nopt)) continue;
-                /* If the next note's first reachable option uses this finger,
-                 * add a small penalty so we leave it free for the next note */
-                if (nopt->finger == opt->finger) {
-                    cost += 10.0f;
-                }
-                break;  /* only check the first reachable next option */
-            }
-        }
-
-        if (cost < bestCost) {
-            bestCost = cost;
-            best     = *opt;
-        }
-    }
-    return best;
-}
-
-
-/* --------------------------------------------------------------------------
- * playNoteWithOption — like NotePlayer_playNote but with a pre-chosen option
- * -------------------------------------------------------------------------- */
-
-static int playNoteWithOption(const PianoKey* key, const FingerOption* choice,
-                              uint32_t durationMs)
-{
-    float currentMM = hal_motorGetPosition();
-    uint32_t holdMs;
-
-    if (!choice->valid || !FingerOption_isReachable(choice)) {
-        debugLog("playNote: no reachable finger option\r\n");
-        return 0;
-    }
-
-    /* Move motor */
-    logNoteHeader(key->name, key->midiNote, choice->motorPositionMM, currentMM);
-    {
-        char buf[48];
-        snprintf(buf, sizeof(buf), "  %-18s: %s\r\n", "finger",
-                 fingerName(choice->finger));
-        debugLog(buf);
-    }
-    hal_motorSetTarget(choice->motorPositionMM);
-
-    /* Wait for arrival */
-    hal_motorWaitUntilArrived();
-    logArrival(choice->motorPositionMM);
-    if (HAL_SETTLE_TIME_MS > 0U) {
-        hal_delay(HAL_SETTLE_TIME_MS);
-    }
-
-    /* Press */
-    {
-        char buf[56];
-        snprintf(buf, sizeof(buf), "  [press finger %s  hold %lums]\r\n",
-                 fingerName(choice->finger), (unsigned long)durationMs);
-        debugLog(buf);
-    }
-    hal_fingerPress((uint8_t)choice->finger);
-
-    /* Hold */
-    holdMs = scaledHoldMs(durationMs);
-    hal_delay(holdMs);
-
-    /* Release */
-    debugLog("  [release]\r\n");
-    hal_fingerRelease((uint8_t)choice->finger);
-
-    return 1;
-}
-
-
-/* --------------------------------------------------------------------------
- * NotePlayer_playSequence — score-timed nearest-position playback
+ * NotePlayer_playSequence
  * -------------------------------------------------------------------------- */
 
 void NotePlayer_playSequence(const NoteEvent* events, uint16_t count)
 {
     uint16_t i;
-    float currentMM = hal_motorGetPosition();
-    uint32_t scheduledStartTick = hal_getTick();
-
     for (i = 0; i < count; i++) {
         const NoteEvent* e = &events[i];
-        const PianoKey* key = keyByMidi(e->midiNote);
-        FingerOption choice;
-        uint32_t holdMs = scaledHoldMs(e->durationMs);
-        uint32_t intervalToNextStart = e->durationMs + e->delayAfterMs;
+        int ok;
 
-        if ((i + 1U) < count && holdMs > intervalToNextStart) {
-            holdMs = intervalToNextStart;
+        /* Play the note — blocks until finger releases */
+        ok = NotePlayer_playNote(e->midiNote, e->durationMs);
+
+        /* If unreachable, still wait the note's duration so rhythm is kept.
+         * The song keeps going even if a note is skipped. */
+        if (!ok) {
+            hal_delay((uint32_t)((float)e->durationMs * HAL_PRESS_DURATION_SCALE));
         }
 
-        if (!key) {
-            waitUntilTick(scheduledStartTick);
-            hal_delay(holdMs);
-            scheduledStartTick += intervalToNextStart;
-            continue;
+        /* Gap / rest between notes */
+        if (e->delayAfterMs > 0U) {
+            hal_delay(e->delayAfterMs);
         }
-
-        /* For uploaded MIDI, prefer the nearest reachable option.
-         * This keeps carriage travel predictable on repeated-note melodies
-         * and avoids large back-and-forth moves just to vary fingers. */
-        choice = PianoKey_bestOption(key, currentMM);
-
-        if (!choice.valid || !FingerOption_isReachable(&choice)) {
-            waitUntilTick(scheduledStartTick);
-            hal_delay(holdMs);
-            scheduledStartTick += intervalToNextStart;
-            continue;
-        }
-
-        logNoteHeader(key->name, key->midiNote, choice.motorPositionMM, currentMM);
-        {
-            char buf[48];
-            snprintf(buf, sizeof(buf), "  %-18s: %s\r\n", "finger",
-                     fingerName(choice.finger));
-            debugLog(buf);
-        }
-
-        hal_motorSetTarget(choice.motorPositionMM);
-        hal_motorWaitUntilArrived();
-        logArrival(choice.motorPositionMM);
-
-        waitUntilTick(scheduledStartTick);
-
-        {
-            char buf[56];
-            snprintf(buf, sizeof(buf), "  [press finger %s  hold %lums]\r\n",
-                     fingerName(choice.finger), (unsigned long)holdMs);
-            debugLog(buf);
-        }
-        hal_fingerPress((uint8_t)choice.finger);
-        hal_delay(holdMs);
-        debugLog("  [release]\r\n");
-        hal_fingerRelease((uint8_t)choice.finger);
-
-        currentMM = choice.motorPositionMM;
-        scheduledStartTick += intervalToNextStart;
     }
 }
 

@@ -14,7 +14,6 @@ float pid_get_settle_velocity_deg_per_sec(void);
 float pid_get_last_target_angle_deg(void);
 float pid_get_last_angle_deg(void);
 float pid_get_last_error_deg(void);
-float pid_get_last_velocity_deg_per_sec(void);
 float pid_get_last_command(void);
 
 #endif
