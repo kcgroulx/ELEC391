@@ -261,6 +261,11 @@ class PianoRobotGUI:
         self.playback_thread = None
         self.stop_playback = False
         self.connected = False
+        self.firmware_ready = False
+        self.playback_finish_after = None
+        self.ready_probe_after = None
+        self.saw_boot_banner = False
+        self.serial_pause_reads = False
 
         # Telemetry
         self.tel_pos = 0.0
@@ -405,7 +410,7 @@ class PianoRobotGUI:
                                   relief='flat', padx=16, pady=6)
         self.play_btn.pack(fill='x', pady=2)
 
-        self.stop_btn = tk.Button(btn_grid, text="Stop",
+        self.stop_btn = tk.Button(btn_grid, text="Stop (Not Supported)",
                                   command=self._stop, state='disabled',
                                   bg=COLORS['accent'], fg='white',
                                   font=('Segoe UI', 10, 'bold'),
@@ -533,6 +538,48 @@ class PianoRobotGUI:
         if ports and not self.port_var.get():
             self.port_var.set(ports[0])
 
+    def _set_robot_ready(self, ready):
+        self.firmware_ready = ready
+        if not self.connected:
+            return
+
+        port = self.port_var.get()
+        if ready:
+            self.status_label.configure(
+                text=f"Connected: {port} (robot ready)",
+                fg=COLORS['success'])
+        else:
+            self.status_label.configure(
+                text=f"Connected: {port} (waiting for robot)",
+                fg=COLORS['warning'])
+
+    def _estimated_song_duration_ms(self):
+        if not self.current_notes:
+            return 0
+        return int(max(t + d for t, _, d, _ in self.current_notes))
+
+    def _cancel_playback_finish(self):
+        if self.playback_finish_after is not None:
+            self.root.after_cancel(self.playback_finish_after)
+            self.playback_finish_after = None
+
+    def _schedule_playback_finish(self, delay_ms):
+        self._cancel_playback_finish()
+        self.playback_finish_after = self.root.after(delay_ms, self._playback_finished)
+
+    def _cancel_ready_probe(self):
+        if self.ready_probe_after is not None:
+            self.root.after_cancel(self.ready_probe_after)
+            self.ready_probe_after = None
+
+    def _assume_ready_if_silent(self):
+        self.ready_probe_after = None
+        if self.connected and not self.firmware_ready and not self.saw_boot_banner:
+            self._set_robot_ready(True)
+            if not self.is_playing:
+                self.progress_label.configure(text="Robot ready")
+            self._log("No boot banner seen; assuming robot is already ready.\n", 'info')
+
     def _toggle_connection(self):
         if self.connected:
             self._disconnect()
@@ -545,21 +592,32 @@ class PianoRobotGUI:
             messagebox.showwarning("No Port", "Select a serial port first.")
             return
         try:
-            self.serial_port = serial.Serial(port, 115200, timeout=0.1)
+            self._cancel_playback_finish()
+            self._cancel_ready_probe()
+            self.serial_port = serial.Serial(port, 115200, timeout=0.1, write_timeout=5)
             self.connected = True
+            self.firmware_ready = False
+            self.saw_boot_banner = False
             self.serial_running = True
             self.serial_thread = threading.Thread(target=self._serial_reader, daemon=True)
             self.serial_thread.start()
 
             self.connect_btn.configure(text="Disconnect", bg=COLORS['warning'])
-            self.status_label.configure(text=f"Connected: {port}", fg=COLORS['success'])
+            self._set_robot_ready(False)
+            self.progress_label.configure(text="Waiting for robot ready...")
             self._log(f"Connected to {port}\n", 'success')
+            self._log("Waiting for robot ready...\n", 'info')
+            self.ready_probe_after = self.root.after(1500, self._assume_ready_if_silent)
         except serial.SerialException as e:
             messagebox.showerror("Connection Error", str(e))
 
     def _disconnect(self):
+        self._cancel_playback_finish()
+        self._cancel_ready_probe()
         self.serial_running = False
         self.connected = False
+        self.firmware_ready = False
+        self.is_playing = False
         if self.serial_port:
             try:
                 self.serial_port.close()
@@ -569,6 +627,8 @@ class PianoRobotGUI:
 
         self.connect_btn.configure(text="Connect", bg=COLORS['accent'])
         self.status_label.configure(text="Disconnected", fg=COLORS['warning'])
+        self.stop_btn.configure(state='disabled')
+        self.progress_label.configure(text="Ready")
         self._log("Disconnected\n", 'info')
 
     def _serial_reader(self):
@@ -576,6 +636,9 @@ class PianoRobotGUI:
         buf = b""
         while self.serial_running and self.serial_port:
             try:
+                if self.serial_pause_reads:
+                    time.sleep(0.01)
+                    continue
                 chunk = self.serial_port.read(256)
                 if chunk:
                     buf += chunk
@@ -599,6 +662,40 @@ class PianoRobotGUI:
 
     def _process_serial_line(self, line):
         """Parse telemetry and note events from serial output."""
+        if "Piano robot starting..." in line or "Running homing sequence..." in line:
+            self.saw_boot_banner = True
+            self._set_robot_ready(False)
+            self._log(line + '\n', 'info')
+            return
+
+        if line == "Homing done. Ready.":
+            self.saw_boot_banner = True
+            self._cancel_ready_probe()
+            self._set_robot_ready(True)
+            if not self.is_playing:
+                self.progress_label.configure(text="Robot ready")
+            self._log(line + '\n', 'success')
+            return
+
+        midi_match = re.search(
+            r'^MIDI:\s+status=(\w+)\s+notes=(\d+)\s+skipped=(\d+)\s+dur=(\d+)ms$',
+            line)
+        if midi_match:
+            status = midi_match.group(1)
+            note_count = int(midi_match.group(2))
+            duration_ms = int(midi_match.group(4))
+
+            if status == "OK":
+                self.progress_label.configure(
+                    text=f"Robot accepted {note_count} notes")
+                total_ms = max(duration_ms, self._estimated_song_duration_ms())
+                self._schedule_playback_finish(max(total_ms + 500, 1500))
+            else:
+                self._playback_finished(f"Robot rejected MIDI ({status})")
+
+            self._log(line + '\n', 'success' if status == "OK" else 'info')
+            return
+
         # Parse telemetry: [TEL] STATE  pos=X.XXmm  tgt=X.XXmm ...
         tel_match = re.search(
             r'\[TEL\]\s+(\w+)\s+pos=\s*([\d.-]+)mm\s+tgt=\s*([\d.-]+)mm.*fingers=0x([0-9A-Fa-f]+)',
@@ -627,6 +724,8 @@ class PianoRobotGUI:
         if note_match:
             midi = int(note_match.group(2))
             self.active_keys.add(midi)
+            if self.is_playing:
+                self.progress_label.configure(text="Playing...")
             self._draw_piano()
             self._log(line + '\n', 'note')
 
@@ -720,11 +819,17 @@ class PianoRobotGUI:
         if not self.connected:
             messagebox.showinfo("Not Connected", "Connect to the robot first.")
             return
+        if not self.firmware_ready:
+            messagebox.showinfo(
+                "Robot Not Ready",
+                "Wait for the robot to finish booting and homing before uploading.")
+            return
 
         path = self.midi_files[sel[0]]
         self.is_playing = True
         self.stop_playback = False
         self.current_note_idx = -1
+        self._cancel_playback_finish()
         self.play_btn.configure(state='disabled')
         self.stop_btn.configure(state='normal')
         self.progress_var.set(0)
@@ -741,38 +846,70 @@ class PianoRobotGUI:
 
             file_len = len(data)
             header = struct.pack('>I', file_len)
-            self.serial_port.write(header)
-            time.sleep(0.05)
 
-            # Send in chunks
-            chunk_size = 256
+            # Pause the monitor while uploading so Windows serial I/O stays
+            # stable during binary MIDI transfer.
+            self.serial_pause_reads = True
+            time.sleep(0.15)
+            try:
+                self.serial_port.reset_output_buffer()
+            except Exception:
+                pass
+
+            written = self.serial_port.write(header)
+            if written != len(header):
+                raise IOError(f"short header write: expected {len(header)} bytes, wrote {written}")
+
+            chunk_size = 64
             sent = 0
+            time.sleep(0.02)
             while sent < file_len:
                 chunk = data[sent:sent + chunk_size]
-                self.serial_port.write(chunk)
-                sent += len(chunk)
-                pct = 100 * sent / file_len
-                self.root.after(0, lambda p=pct: self.progress_var.set(p))
-                time.sleep(0.005)
+                chunk_written = self.serial_port.write(chunk)
+                if chunk_written != len(chunk):
+                    raise IOError(
+                        f"short data write at offset {sent}: expected {len(chunk)} bytes, "
+                        f"wrote {chunk_written}"
+                    )
+                sent += chunk_written
+                self.root.after(0, lambda p=(100 * sent / file_len): self.progress_var.set(p))
+                time.sleep(0.01)
 
             self.serial_port.flush()
-            self.root.after(0, lambda: self.progress_label.configure(text="Playing..."))
+            self.serial_pause_reads = False
+
+            self.root.after(0, lambda: self.progress_var.set(100))
+            self.root.after(0, lambda: self.progress_label.configure(
+                text="Upload complete. Waiting for robot..."))
             self.root.after(0, lambda: self._log(f"Sent {file_len} bytes\n", 'success'))
+            fallback_ms = max(self._estimated_song_duration_ms() + 2000, 10000)
+            self.root.after(0, lambda d=fallback_ms: self._schedule_playback_finish(d))
 
         except Exception as e:
+            self.serial_pause_reads = False
             self.root.after(0, lambda: self._log(f"Send error: {e}\n", 'info'))
-        finally:
-            self.root.after(0, self._playback_finished)
+            self.root.after(0, lambda: self._playback_finished("Upload failed"))
 
-    def _playback_finished(self):
+    def _playback_finished(self, status_text=None):
+        self._cancel_playback_finish()
         self.is_playing = False
         self.play_btn.configure(state='normal')
         self.stop_btn.configure(state='disabled')
+        if status_text is not None:
+            self.progress_label.configure(text=status_text)
+        elif self.connected and self.firmware_ready:
+            self.progress_label.configure(text="Robot ready")
+        else:
+            self.progress_label.configure(text="Ready")
 
     def _stop(self):
-        self.stop_playback = True
-        self._playback_finished()
-        self._log("Playback stopped\n", 'info')
+        self._log(
+            "Stop is not implemented in firmware. Wait for the current song to finish "
+            "before uploading another one.\n",
+            'info'
+        )
+        if self.is_playing:
+            self.progress_label.configure(text="Robot is still playing current song")
 
     def _send_home(self):
         if not self.connected:

@@ -17,9 +17,12 @@
 
 #include "motor_control.h"
 #include "hal_interface.h"
+#include "midi_parser.h"
 #include "song_player.h"
 
 hw_timer_t* g_pidTimer = NULL;
+/* Default ESP32 serial RX buffering is too small for larger MIDI payloads. */
+static const size_t SERIAL_RX_BUFFER_BYTES = (size_t)MIDI_UART_BUF_SIZE + 64U;
 
 /* --------------------------------------------------------------------------
  * ISR — sets a flag only. Nothing else. No function calls into flash.
@@ -36,6 +39,7 @@ void IRAM_ATTR onPIDTimer(void)
  * -------------------------------------------------------------------------- */
 void setup(void)
 {
+    Serial.setRxBufferSize(SERIAL_RX_BUFFER_BYTES);
     Serial.begin(115200);
     Serial.println("Piano robot starting...");
 
@@ -63,15 +67,13 @@ void loop(void)
 {
     hal_runPendingPID();   /* keep motor under control between songs */
 
-    /* --- Hardware tests --- */
+    /* Normal runtime mode. Uncomment a hardware test only for bench bring-up. */
     //test_CmajorScale();           /* 1. C major scale C2–C3                 */
-    test_happyBirthday();         /* 2. Happy Birthday in C major           */
+    SongPlayer_run();             /* 2. Receive MIDI over Serial and play   */
     //test_solenoidPairs();         /* 3. Fire all 10 two-finger combos       */
     //test_randomKeys();            /* 4. Random notes, all 5 fingers equally */
     //test_limitSwitchThenPlay();   /* 3. Home via limit switch, then play    */
     //test_fingersSolenoidOnly();   /* 4. Fire each solenoid without moving   */
     //test_allFingers();            /* 5. Move to keys + press all 5 fingers  */
-    //SongPlayer_run();             /* 6. Receive MIDI over Serial and play   */
 
-    while (true) { hal_runPendingPID(); }  /* stop after one pass */
 }

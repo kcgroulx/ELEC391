@@ -158,16 +158,17 @@ static void activeNote_on(uint8_t note, uint32_t tick) {
     s_active[0].active = 1;
 }
 
-/* Returns on-tick of the matching note, sets active=0. Returns 0 if not found. */
-static uint32_t activeNote_off(uint8_t note) {
+/* Returns 1 and writes on-tick if found, else returns 0. */
+static uint8_t activeNote_off(uint8_t note, uint32_t* onTickOut) {
     uint8_t i;
     for (i = 0; i < MAX_ACTIVE_NOTES; i++) {
         if (s_active[i].active && s_active[i].note == note) {
             s_active[i].active = 0;
-            return s_active[i].onTick;
+            if (onTickOut) *onTickOut = s_active[i].onTick;
+            return 1U;
         }
     }
-    return 0;
+    return 0U;
 }
 
 
@@ -211,10 +212,10 @@ static void parseTrack(Reader*          r,
         if (type == 0x80) {
             uint8_t note     = Reader_u8(r);
             uint8_t velocity = Reader_u8(r);
+            uint32_t onTick;
             (void)velocity;
 
-            uint32_t onTick  = activeNote_off(note);
-            if (onTick > 0 && result->noteCount < maxEvents) {
+            if (activeNote_off(note, &onTick) && result->noteCount < maxEvents) {
                 uint32_t durMs = ticks_to_ms(currentTick - onTick, tempo);
                 if (durMs < 10U) durMs = 10U;   /* clamp very short notes    */
 
@@ -233,8 +234,8 @@ static void parseTrack(Reader*          r,
 
             if (velocity == 0) {
                 /* Note On with velocity 0 is equivalent to Note Off */
-                uint32_t onTick = activeNote_off(note);
-                if (onTick > 0 && result->noteCount < maxEvents) {
+                uint32_t onTick;
+                if (activeNote_off(note, &onTick) && result->noteCount < maxEvents) {
                     uint32_t durMs = ticks_to_ms(currentTick - onTick, tempo);
                     if (durMs < 10U) durMs = 10U;
 
@@ -460,14 +461,18 @@ void Midi_parseBuffer(const uint8_t*   buf,
 uint32_t Midi_receiveUART(uint8_t* buf, uint32_t bufSize, uint32_t timeoutMs)
 {
     /* -----------------------------------------------------------------------
-     * Robust byte-by-byte receive with one shared deadline.
+     * Receive with an inactivity timeout, not a whole-transfer timeout.
      *
-     * Why not Serial.readBytes() x2:
-     *   Serial.setTimeout() only applies to the next readBytes call.
-     *   The second call reverts to the 1 s default — too short, causes
-     *   UART_FAIL on anything but tiny files.
+     * The old implementation read one byte at a time and ran PID work before
+     * every byte. That can fall behind the UART stream on larger files and
+     * overflow the RX buffer even though the sender is operating correctly.
      *
-     * Also runs hal_runPendingPID() while waiting so the motor stays live.
+     * This version:
+     *   1. Waits for the 4-byte length header byte-by-byte.
+     *   2. Drains the file payload in chunks whenever bytes are available.
+     *   3. Resets the timeout after every successful read so timeoutMs means
+     *      "no bytes arrived for this long", not "entire transfer must finish
+     *      within this long".
      * ----------------------------------------------------------------------- */
 
     uint32_t deadline = (uint32_t)millis() + timeoutMs;
@@ -481,7 +486,11 @@ uint32_t Midi_receiveUART(uint8_t* buf, uint32_t bufSize, uint32_t timeoutMs)
             (var) = -1; \
             while ((int32_t)(deadline - (uint32_t)millis()) > 0) { \
                 hal_runPendingPID(); \
-                if (Serial.available()) { (var) = Serial.read(); break; } \
+                if (Serial.available()) { \
+                    (var) = Serial.read(); \
+                    deadline = (uint32_t)millis() + timeoutMs; \
+                    break; \
+                } \
             } \
             if ((var) < 0) return 0; \
         } while(0)
@@ -499,9 +508,23 @@ uint32_t Midi_receiveUART(uint8_t* buf, uint32_t bufSize, uint32_t timeoutMs)
     /* Read file bytes */
     received = 0;
     while (received < fileLen) {
-        int b;
-        READ_BYTE(b);
-        buf[received++] = (uint8_t)b;
+        int available = Serial.available();
+        if (available > 0) {
+            uint32_t remaining = fileLen - received;
+            size_t toRead = (size_t)available;
+            size_t n;
+
+            if (toRead > (size_t)remaining) toRead = (size_t)remaining;
+            n = Serial.readBytes((char*)&buf[received], toRead);
+            if (n > 0U) {
+                received += (uint32_t)n;
+                deadline = (uint32_t)millis() + timeoutMs;
+                continue;
+            }
+        }
+
+        if ((int32_t)(deadline - (uint32_t)millis()) <= 0) return 0;
+        hal_runPendingPID();
     }
 
     #undef READ_BYTE

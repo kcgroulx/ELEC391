@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Test/build outputs
+*.exe
+*.out
+*.o
+*.obj
+*.elf
+*.bin
+*.hex
+*.map
+*.log
+*.csv
+
+# Arduino / embedded build directories
+.pio/
+build/
+dist/
+
+# MATLAB / Simulink autosave files
+*.asv
+slprj/
+
+# Editors / local project settings
+.vscode/
+.idea/
+
+# OS cruft
+Thumbs.db
+.DS_Store

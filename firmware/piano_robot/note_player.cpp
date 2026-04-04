@@ -282,19 +282,17 @@ static int playNoteWithOption(const PianoKey* key, const FingerOption* choice,
 
 
 /* --------------------------------------------------------------------------
- * NotePlayer_playSequence — with lookahead finger planning
+ * NotePlayer_playSequence — stable nearest-position playback
  * -------------------------------------------------------------------------- */
 
 void NotePlayer_playSequence(const NoteEvent* events, uint16_t count)
 {
     uint16_t i;
     float currentMM = hal_motorGetPosition();
-    Finger lastFinger = FINGER_NONE;
 
     for (i = 0; i < count; i++) {
         const NoteEvent* e = &events[i];
         const PianoKey* key = keyByMidi(e->midiNote);
-        const PianoKey* nextKey = NULL;
         FingerOption choice;
         int ok;
 
@@ -304,13 +302,10 @@ void NotePlayer_playSequence(const NoteEvent* events, uint16_t count)
             continue;
         }
 
-        /* Look ahead to next note */
-        if (i + 1 < count) {
-            nextKey = keyByMidi(events[i + 1].midiNote);
-        }
-
-        /* Pick finger — avoids reusing lastFinger */
-        choice = pickBestOption(key, currentMM, nextKey, lastFinger);
+        /* For uploaded MIDI, prefer the nearest reachable option.
+         * This keeps carriage travel predictable on repeated-note melodies
+         * and avoids large back-and-forth moves just to vary fingers. */
+        choice = PianoKey_bestOption(key, currentMM);
 
         /* Play */
         ok = playNoteWithOption(key, &choice, e->durationMs);
@@ -318,7 +313,6 @@ void NotePlayer_playSequence(const NoteEvent* events, uint16_t count)
             hal_delay((uint32_t)((float)e->durationMs * HAL_PRESS_DURATION_SCALE));
         } else {
             currentMM = choice.motorPositionMM;
-            lastFinger = choice.finger;
         }
 
         /* Gap between notes */
