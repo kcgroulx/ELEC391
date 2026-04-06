@@ -26,6 +26,9 @@ pcnt_channel_handle_t encoderChannelB = nullptr;
 constexpr pcnt_unit_t encoderUnit = PCNT_UNIT_0;
 #endif
 
+uint8_t currentFingerBitmask = 0U;
+float fingerPressedDuty = app_config::finger_pwm_pressed_default_duty;
+
 uint32_t pwm_max_duty(uint8_t resolutionBits)
 {
     return (1UL << resolutionBits) - 1UL;
@@ -140,8 +143,16 @@ void platform_io_init(void)
 
     for (size_t i = 0; i < app_config::finger_count; ++i)
     {
-        pinMode(app_config::finger_pins[i], OUTPUT);
-        digitalWrite(app_config::finger_pins[i], !app_config::finger_active_level);
+        ledcAttachChannel(
+            app_config::finger_pins[i],
+            app_config::finger_pwm_frequency_hz,
+            app_config::finger_pwm_resolution_bits,
+            app_config::finger_pwm_channels[i]);
+        write_pwm_pin(
+            app_config::finger_pins[i],
+            0.0f,
+            !app_config::finger_active_level,
+            app_config::finger_pwm_resolution_bits);
     }
 
     ledcAttachChannel(
@@ -157,6 +168,7 @@ void platform_io_init(void)
     configure_encoder_pcnt();
 
     platform_io_set_motor_pwm(0.0f, 0.0f);
+    platform_io_set_fingers(0x00);
 }
 
 void platform_io_set_motor_pwm(float forwardDuty, float reverseDuty)
@@ -171,6 +183,17 @@ void platform_io_set_motor_pwm(float forwardDuty, float reverseDuty)
         reverseDuty,
         app_config::motor_pwm_active_low,
         app_config::motor_pwm_resolution_bits);
+}
+
+void platform_io_set_finger_pressed_duty(float duty)
+{
+    fingerPressedDuty = constrain(duty, 0.0f, 1.0f);
+    platform_io_set_fingers(currentFingerBitmask);
+}
+
+float platform_io_get_finger_pressed_duty(void)
+{
+    return fingerPressedDuty;
 }
 
 int32_t platform_io_get_encoder_count(void)
@@ -241,10 +264,15 @@ bool platform_io_is_user_button_active(void)
 
 void platform_io_set_fingers(uint8_t fingerBitmask)
 {
+    currentFingerBitmask = fingerBitmask;
     for (size_t i = 0; i < app_config::finger_count; ++i)
     {
         const bool active = (fingerBitmask & (1U << i)) != 0U;
-        digitalWrite(app_config::finger_pins[i], active ? app_config::finger_active_level : !app_config::finger_active_level);
+        write_pwm_pin(
+            app_config::finger_pins[i],
+            active ? fingerPressedDuty : 0.0f,
+            !app_config::finger_active_level,
+            app_config::finger_pwm_resolution_bits);
     }
 }
 

@@ -111,6 +111,25 @@ static void waitUntilTick(uint32_t targetTick)
     }
 }
 
+static uint32_t pressTickForNoteStart(uint32_t noteStartTick)
+{
+    return noteStartTick - HAL_SOLENOID_STRIKE_LEAD_MS;
+}
+
+static void logPressLateness(uint32_t pressTick)
+{
+#if NOTE_PLAYER_ENABLE_DEBUG
+    int32_t lateMs = (int32_t)(hal_getTick() - pressTick);
+    if (lateMs > 0) {
+        char buf[48];
+        snprintf(buf, sizeof(buf), "  [late press by %ldms]\r\n", (long)lateMs);
+        Serial.print(buf);
+    }
+#else
+    (void)pressTick;
+#endif
+}
+
 static uint32_t scaledHoldMs(uint32_t durationMs)
 {
     uint32_t holdMs = (uint32_t)((float)durationMs * HAL_PRESS_DURATION_SCALE);
@@ -409,6 +428,50 @@ typedef struct {
     uint8_t  assigned;      /* 1 = will be played                           */
 } ChordSlot;
 
+static uint8_t gatherChordGroup(const NoteEvent* events,
+                                uint16_t startIdx,
+                                uint16_t totalCount,
+                                const PianoKey* chordNotes[MAX_CHORD],
+                                const NoteEvent* chordEvents[MAX_CHORD])
+{
+    uint8_t chordSize = 1;
+    uint16_t j;
+
+    chordNotes[0]  = keyByMidi(events[startIdx].midiNote);
+    chordEvents[0] = &events[startIdx];
+
+    for (j = startIdx + 1; j < totalCount && chordSize < MAX_CHORD; j++) {
+        uint32_t gap = 0;
+        uint16_t k;
+
+        for (k = startIdx; k < j; k++) {
+            gap += events[k].delayAfterMs;
+        }
+        if (gap > CHORD_WINDOW_MS) break;
+
+        chordNotes[chordSize]  = keyByMidi(events[j].midiNote);
+        chordEvents[chordSize] = &events[j];
+        chordSize++;
+    }
+
+    return chordSize;
+}
+
+static uint8_t firstAssignedChordPosition(const ChordSlot slots[MAX_CHORD],
+                                          uint8_t chordSize,
+                                          float* motorMM)
+{
+    uint8_t s;
+
+    for (s = 0; s < chordSize; s++) {
+        if (slots[s].assigned) {
+            *motorMM = slots[s].motorMM;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* Try to assign fingers for notes[] at a given candidate motor position.
  * Returns how many notes got a unique finger.  Fills slots[].
  * White-key notes are assigned first (prioritised). */
@@ -513,7 +576,46 @@ void NotePlayer_playSequence(const NoteEvent* events, uint16_t count)
 {
     uint16_t i;
     float currentMM = hal_motorGetPosition();
-    uint32_t scheduledStartTick = hal_getTick();
+    uint32_t scheduledStartTick;
+
+    if (count == 0U) {
+        return;
+    }
+
+    /* Pre-position before starting the song clock so the first note can land
+     * on its scheduled downbeat instead of waiting for the first carriage move. */
+    {
+        const PianoKey* firstChordNotes[MAX_CHORD];
+        const NoteEvent* firstChordEvents[MAX_CHORD];
+        uint8_t firstChordSize = gatherChordGroup(
+            events, 0U, count, firstChordNotes, firstChordEvents);
+        float firstTargetMM = currentMM;
+        uint8_t hasFirstTarget = 0U;
+
+        if (firstChordSize == 1U) {
+            FingerOption firstChoice = lookaheadPick(events, 0U, count, currentMM);
+            if (firstChoice.valid && FingerOption_isReachable(&firstChoice)) {
+                firstTargetMM = firstChoice.motorPositionMM;
+                hasFirstTarget = 1U;
+            }
+        } else {
+            ChordSlot firstSlots[MAX_CHORD];
+            if (planChord(firstChordNotes, firstChordSize, currentMM, firstSlots) > 0U) {
+                hasFirstTarget = firstAssignedChordPosition(
+                    firstSlots, firstChordSize, &firstTargetMM);
+            }
+        }
+
+        if (hasFirstTarget) {
+            hal_motorSetTarget(firstTargetMM);
+            hal_motorWaitUntilArrived();
+            currentMM = firstTargetMM;
+        }
+
+        (void)firstChordEvents;
+    }
+
+    scheduledStartTick = hal_getTick() + HAL_SOLENOID_STRIKE_LEAD_MS;
 
     i = 0;
     while (i < count) {
@@ -522,29 +624,8 @@ void NotePlayer_playSequence(const NoteEvent* events, uint16_t count)
         /* ── 1. Gather chord group ─────────────────────────────────────── */
         const PianoKey* chordNotes[MAX_CHORD];
         const NoteEvent* chordEvents[MAX_CHORD];
-        uint8_t chordSize = 0;
-        uint16_t j;
-
-        /* First note always goes in */
-        chordNotes[0]  = keyByMidi(e->midiNote);
-        chordEvents[0] = e;
-        chordSize = 1;
-
-        /* Look ahead for notes starting within CHORD_WINDOW_MS */
-        for (j = i + 1; j < count && chordSize < MAX_CHORD; j++) {
-            /* delayAfterMs of each preceding note tells us the gap.
-             * Accumulate gaps to see if next note is within window. */
-            uint32_t gap = 0;
-            uint16_t k;
-            for (k = i; k < j; k++) {
-                gap += events[k].delayAfterMs;
-            }
-            if (gap > CHORD_WINDOW_MS) break;
-
-            chordNotes[chordSize]  = keyByMidi(events[j].midiNote);
-            chordEvents[chordSize] = &events[j];
-            chordSize++;
-        }
+        uint8_t chordSize = gatherChordGroup(
+            events, i, count, chordNotes, chordEvents);
 
         /* ── 2. Plan: single note or chord ─────────────────────────────── */
         if (chordSize == 1) {
@@ -581,8 +662,9 @@ void NotePlayer_playSequence(const NoteEvent* events, uint16_t count)
             hal_motorSetTarget(choice.motorPositionMM);
             hal_motorWaitUntilArrived();
             logArrival(choice.motorPositionMM);
+            logPressLateness(pressTickForNoteStart(scheduledStartTick));
 
-            waitUntilTick(scheduledStartTick);
+            waitUntilTick(pressTickForNoteStart(scheduledStartTick));
 
             hal_fingerPress((uint8_t)choice.finger);
             hal_delay(holdMs);
@@ -633,17 +715,13 @@ void NotePlayer_playSequence(const NoteEvent* events, uint16_t count)
 
             /* Move to the chord position (all slots share the same motorMM) */
             float chordMM = currentMM;
-            for (s = 0; s < chordSize; s++) {
-                if (slots[s].assigned) {
-                    chordMM = slots[s].motorMM;
-                    break;
-                }
-            }
+            (void)firstAssignedChordPosition(slots, chordSize, &chordMM);
 
             hal_motorSetTarget(chordMM);
             hal_motorWaitUntilArrived();
+            logPressLateness(pressTickForNoteStart(scheduledStartTick));
 
-            waitUntilTick(scheduledStartTick);
+            waitUntilTick(pressTickForNoteStart(scheduledStartTick));
 
             /* Press all assigned fingers simultaneously */
             for (s = 0; s < chordSize; s++) {

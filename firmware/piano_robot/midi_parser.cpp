@@ -6,6 +6,7 @@
 #include "midi_parser.h"
 #include "piano_keymap.h"
 #include "hal_interface.h"
+#include "platform_io.h"
 #include "Arduino.h"
 #include <string.h>
 #include <stdio.h>
@@ -558,6 +559,38 @@ uint32_t Midi_receiveUART(uint8_t* buf, uint32_t bufSize, uint32_t timeoutMs)
     READ_BYTE(b1);
     READ_BYTE(b2);
     READ_BYTE(b3);
+
+    if (b0 == 'P' && b1 == 'W' && b2 == 'M' && b3 == ' ') {
+        int percent = 0;
+        int haveDigits = 0;
+        int ch = -1;
+
+        while ((int32_t)(deadline - (uint32_t)millis()) > 0) {
+            hal_runPendingPID();
+            if (!Serial.available()) continue;
+
+            ch = Serial.read();
+            deadline = (uint32_t)millis() + timeoutMs;
+            if (ch == '\r') continue;
+            if (ch == '\n') break;
+
+            if (ch >= '0' && ch <= '9') {
+                percent = (percent * 10) + (ch - '0');
+                haveDigits = 1;
+                if (percent > 100) percent = 100;
+            }
+        }
+
+        if (haveDigits) {
+            char msg[64];
+            platform_io_set_finger_pressed_duty((float)percent / 100.0f);
+            snprintf(msg, sizeof(msg),
+                "[CFG] solenoid press PWM=%d%%\r\n",
+                percent);
+            Serial.print(msg);
+        }
+        return 0U;
+    }
 
     fileLen = ((uint32_t)b0 << 24)
             | ((uint32_t)b1 << 16)

@@ -266,6 +266,7 @@ class PianoRobotGUI:
         self.ready_probe_after = None
         self.saw_boot_banner = False
         self.serial_pause_reads = False
+        self.solenoid_pwm_percent_var = tk.IntVar(value=100)
 
         # Telemetry
         self.tel_pos = 0.0
@@ -424,6 +425,26 @@ class PianoRobotGUI:
                                   relief='flat', padx=12, pady=4)
         self.home_btn.pack(fill='x', pady=2)
 
+        pwm_frame = tk.Frame(card, bg=COLORS['bg_card'])
+        pwm_frame.pack(fill='x', pady=(8, 0))
+        tk.Label(pwm_frame, text="Solenoid PWM",
+                 font=('Segoe UI', 10, 'bold'),
+                 bg=COLORS['bg_card'], fg=COLORS['text']).pack(anchor='w')
+        pwm_row = tk.Frame(pwm_frame, bg=COLORS['bg_card'])
+        pwm_row.pack(fill='x', pady=(2, 0))
+        self.solenoid_pwm_scale = tk.Scale(
+            pwm_row, from_=0, to=100, orient='horizontal',
+            variable=self.solenoid_pwm_percent_var,
+            bg=COLORS['bg_card'], fg=COLORS['text'],
+            troughcolor=COLORS['bg'], highlightthickness=0,
+            resolution=1, length=170)
+        self.solenoid_pwm_scale.pack(side='left', fill='x', expand=True)
+        self.solenoid_pwm_btn = tk.Button(
+            pwm_row, text="Apply", command=self._send_solenoid_pwm_from_gui,
+            bg=COLORS['accent2'], fg='white',
+            font=('Segoe UI', 9), relief='flat', padx=8)
+        self.solenoid_pwm_btn.pack(side='left', padx=(6, 0))
+
         # Playback progress
         self.progress_var = tk.DoubleVar(value=0)
         self.progress = ttk.Progressbar(card, variable=self.progress_var,
@@ -580,6 +601,40 @@ class PianoRobotGUI:
                 self.progress_label.configure(text="Robot ready")
             self._log("No boot banner seen; assuming robot is already ready.\n", 'info')
 
+    def _coerce_solenoid_pwm_percent(self):
+        try:
+            percent = int(self.solenoid_pwm_percent_var.get())
+        except (tk.TclError, ValueError):
+            percent = 100
+        percent = max(0, min(100, percent))
+        self.solenoid_pwm_percent_var.set(percent)
+        return percent
+
+    def _write_solenoid_pwm_command(self, percent):
+        if not self.serial_port:
+            return
+        command = f"PWM {percent}\n".encode("ascii")
+        written = self.serial_port.write(command)
+        if written != len(command):
+            raise IOError(
+                f"short PWM command write: expected {len(command)} bytes, wrote {written}"
+            )
+        self.serial_port.flush()
+
+    def _send_solenoid_pwm_from_gui(self):
+        percent = self._coerce_solenoid_pwm_percent()
+        if not self.connected or not self.serial_port:
+            messagebox.showinfo("Not Connected", "Connect to the robot first.")
+            return
+        if self.serial_pause_reads:
+            messagebox.showinfo("Serial Busy", "Wait for the current serial transfer to finish.")
+            return
+        try:
+            self._write_solenoid_pwm_command(percent)
+            self._log(f"Set solenoid pressed PWM to {percent}%\n", 'success')
+        except Exception as e:
+            self._log(f"PWM command error: {e}\n", 'info')
+
     def _toggle_connection(self):
         if self.connected:
             self._disconnect()
@@ -662,13 +717,17 @@ class PianoRobotGUI:
 
     def _process_serial_line(self, line):
         """Parse telemetry and note events from serial output."""
-        if "Piano robot starting..." in line or "Running homing sequence..." in line:
+        if ("Piano robot starting..." in line
+                or "Running homing sequence..." in line
+                or "Hardware initialised." in line
+                or "Press button to home and start" in line
+                or "homing..." in line.lower()):
             self.saw_boot_banner = True
             self._set_robot_ready(False)
             self._log(line + '\n', 'info')
             return
 
-        if line == "Homing done. Ready.":
+        if line == "Homing done. Ready." or line == "Homing done. Robot running.":
             self.saw_boot_banner = True
             self._cancel_ready_probe()
             self._set_robot_ready(True)
@@ -836,10 +895,14 @@ class PianoRobotGUI:
         self.progress_label.configure(text="Uploading...")
 
         # Send in background thread
-        thread = threading.Thread(target=self._send_midi_thread, args=(path,), daemon=True)
+        solenoid_pwm_percent = self._coerce_solenoid_pwm_percent()
+        thread = threading.Thread(
+            target=self._send_midi_thread,
+            args=(path, solenoid_pwm_percent),
+            daemon=True)
         thread.start()
 
-    def _send_midi_thread(self, path):
+    def _send_midi_thread(self, path, solenoid_pwm_percent):
         try:
             with open(path, 'rb') as f:
                 data = f.read()
@@ -855,6 +918,8 @@ class PianoRobotGUI:
                 self.serial_port.reset_output_buffer()
             except Exception:
                 pass
+            self._write_solenoid_pwm_command(solenoid_pwm_percent)
+            time.sleep(0.05)
 
             written = self.serial_port.write(header)
             if written != len(header):

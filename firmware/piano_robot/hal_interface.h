@@ -30,6 +30,7 @@ extern "C" {
 // MUST be >= PID deadband in mm (8deg * 40mm/360 = 0.89mm). Use 1.5mm for margin.
 #define HAL_ARRIVAL_TOLERANCE_MM    1.5f
 #define HAL_SETTLE_TIME_MS          0U
+#define HAL_SOLENOID_STRIKE_LEAD_MS 20U
 #define HAL_PRESS_DURATION_SCALE    0.85f
 #define HAL_MIN_PRESS_MS            10U
 
