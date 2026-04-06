@@ -270,6 +270,83 @@ void test_chords(void)
     Serial.println("=== CHORD TEST DONE ===\r\n");
 }
 
+/* --------------------------------------------------------------------------
+ * Clocks — Coldplay (transposed to C major)
+ *
+ * Original key: Eb major → transposed down 3 semitones to C major.
+ * Chord progression:  C major → G minor → D minor  (repeat)
+ *
+ * The iconic riff is rolling triplet arpeggios:
+ *   C: root-5th-3rd  =  C4 - G3 - E4
+ *   Gm: root-5th-3rd =  G3 - D4 - A#3
+ *   Dm: root-5th-3rd =  D3 - A3 - F3
+ *
+ * Each triplet group repeats 4× per chord at ~131 BPM.
+ * Second pass adds chord hits for impact.
+ * -------------------------------------------------------------------------- */
+#define CK_NOTE   140     /* triplet eighth note duration (ms)     */
+#define CK_GAP     10     /* tiny gap between arpeggio notes       */
+#define CK_CHORD  500     /* chord hold duration                   */
+#define CK_REST    80     /* rest between sections                 */
+
+static NoteEvent s_clocks[] = {
+    /* ============ PASS 1: Pure arpeggio ================================= */
+
+    /* ── C major arpeggio: C4(60) - G3(55) - E4(64) × 4 ──────────────── */
+    {60, CK_NOTE, CK_GAP},  {55, CK_NOTE, CK_GAP},  {64, CK_NOTE, CK_GAP},
+    {60, CK_NOTE, CK_GAP},  {55, CK_NOTE, CK_GAP},  {64, CK_NOTE, CK_GAP},
+    {60, CK_NOTE, CK_GAP},  {55, CK_NOTE, CK_GAP},  {64, CK_NOTE, CK_GAP},
+    {60, CK_NOTE, CK_GAP},  {55, CK_NOTE, CK_GAP},  {64, CK_NOTE, CK_REST},
+
+    /* ── G minor arpeggio: G3(55) - D4(62) - A#3(58) × 4 ─────────────── */
+    {55, CK_NOTE, CK_GAP},  {62, CK_NOTE, CK_GAP},  {58, CK_NOTE, CK_GAP},
+    {55, CK_NOTE, CK_GAP},  {62, CK_NOTE, CK_GAP},  {58, CK_NOTE, CK_GAP},
+    {55, CK_NOTE, CK_GAP},  {62, CK_NOTE, CK_GAP},  {58, CK_NOTE, CK_GAP},
+    {55, CK_NOTE, CK_GAP},  {62, CK_NOTE, CK_GAP},  {58, CK_NOTE, CK_REST},
+
+    /* ── D minor arpeggio: D3(50) - A3(57) - F3(53) × 4 ──────────────── */
+    {50, CK_NOTE, CK_GAP},  {57, CK_NOTE, CK_GAP},  {53, CK_NOTE, CK_GAP},
+    {50, CK_NOTE, CK_GAP},  {57, CK_NOTE, CK_GAP},  {53, CK_NOTE, CK_GAP},
+    {50, CK_NOTE, CK_GAP},  {57, CK_NOTE, CK_GAP},  {53, CK_NOTE, CK_GAP},
+    {50, CK_NOTE, CK_GAP},  {57, CK_NOTE, CK_GAP},  {53, CK_NOTE, CK_REST},
+
+    /* ============ PASS 2: Arpeggio + chord hits ========================= */
+
+    /* ── C major: arpeggio × 3, then C+E+G chord ─────────────────────── */
+    {60, CK_NOTE, CK_GAP},  {55, CK_NOTE, CK_GAP},  {64, CK_NOTE, CK_GAP},
+    {60, CK_NOTE, CK_GAP},  {55, CK_NOTE, CK_GAP},  {64, CK_NOTE, CK_GAP},
+    {60, CK_NOTE, CK_GAP},  {55, CK_NOTE, CK_GAP},  {64, CK_NOTE, CK_GAP},
+    /* C major chord */
+    {48, CK_CHORD, 0},      {52, CK_CHORD, 0},       {55, CK_CHORD, CK_REST},
+
+    /* ── G minor: arpeggio × 3, then G+A#+D chord ────────────────────── */
+    {55, CK_NOTE, CK_GAP},  {62, CK_NOTE, CK_GAP},  {58, CK_NOTE, CK_GAP},
+    {55, CK_NOTE, CK_GAP},  {62, CK_NOTE, CK_GAP},  {58, CK_NOTE, CK_GAP},
+    {55, CK_NOTE, CK_GAP},  {62, CK_NOTE, CK_GAP},  {58, CK_NOTE, CK_GAP},
+    /* G minor chord (G3 + A#3 + D4) */
+    {55, CK_CHORD, 0},      {58, CK_CHORD, 0},       {62, CK_CHORD, CK_REST},
+
+    /* ── D minor: arpeggio × 3, then D+F+A chord ─────────────────────── */
+    {50, CK_NOTE, CK_GAP},  {57, CK_NOTE, CK_GAP},  {53, CK_NOTE, CK_GAP},
+    {50, CK_NOTE, CK_GAP},  {57, CK_NOTE, CK_GAP},  {53, CK_NOTE, CK_GAP},
+    {50, CK_NOTE, CK_GAP},  {57, CK_NOTE, CK_GAP},  {53, CK_NOTE, CK_GAP},
+    /* D minor chord (D3 + F3 + A3) */
+    {50, CK_CHORD, 0},      {53, CK_CHORD, 0},       {57, CK_CHORD, CK_REST},
+
+    /* ============ ENDING: Big C major chord ============================= */
+    {48, 800, 0},  /* C3 */
+    {52, 800, 0},  /* E3 */
+    {55, 800, 0},  /* G3 — final chord held long */
+};
+static const uint16_t s_clocksLen = sizeof(s_clocks) / sizeof(s_clocks[0]);
+
+void test_clocks(void)
+{
+    Serial.println("\r\n=== CLOCKS — Coldplay ===");
+    NotePlayer_playSequence(s_clocks, s_clocksLen);
+    Serial.println("=== CLOCKS DONE ===\r\n");
+}
+
 
 /* --------------------------------------------------------------------------
  * Test: random notes, directly controlling motor + fingers to guarantee
