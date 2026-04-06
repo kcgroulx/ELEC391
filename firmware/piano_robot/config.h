@@ -20,8 +20,10 @@ constexpr int encoder_a_pin = 18;
 constexpr int encoder_b_pin = 19;
 
 constexpr int home_switch_pin = 2;
-constexpr int user_button_pin = -1;
+constexpr int far_limit_switch_pin = 4;    /* far-side safety limit switch  */
+constexpr int user_button_pin = 15;        /* start/stop button             */
 constexpr bool home_switch_active_level = HIGH;
+constexpr bool far_limit_active_level = HIGH;
 constexpr bool user_button_active_level = LOW;
 constexpr bool finger_active_level = HIGH;
 

@@ -217,6 +217,59 @@ void test_happyBirthday(void)
     Serial.println("=== HAPPY BIRTHDAY DONE ===\r\n");
 }
 
+/* --------------------------------------------------------------------------
+ * Test: chord playback
+ *
+ * Plays a sequence of single notes and chords to verify the chord planner.
+ * Chords are encoded as multiple NoteEvents with delayAfterMs = 0 between
+ * the chord tones (so they start within the CHORD_WINDOW_MS of each other).
+ *
+ * Chord feasibility depends on finger spacing:
+ *   W1 is at carriage pos, W2 at +2 keys, W3 at +4 keys
+ *   So from one carriage position we can hit keys 0, +2, +4 white keys apart.
+ *
+ * Example chords (from one carriage position):
+ *   C-E-G: wki 0,2,4 → W1=C, W2=E, W3=G  (spacing 2,2 white keys) ✓
+ *   C-E:   wki 0,2   → W1=C, W2=E  ✓
+ *   D-F#:  wki 1 + lwki 3  → W1=D, B1=F# (B1 between wki 3 and 4)
+ * -------------------------------------------------------------------------- */
+static NoteEvent s_chordTest[] = {
+    /* Single note */
+    {48, 600, 50},   /* C3 alone */
+
+    /* C3 + E3 chord (2 notes, delayAfter=0 between them = simultaneous) */
+    {48, 600, 0},    /* C3  ← chord start */
+    {52, 600, 50},   /* E3  ← same chord (0ms gap from previous) */
+
+    /* Single note */
+    {55, 600, 50},   /* G3 alone */
+
+    /* C3 + E3 + G3 chord (3 notes — full triad!) */
+    {48, 600, 0},    /* C3  ← chord start */
+    {52, 600, 0},    /* E3  ← same chord */
+    {55, 600, 50},   /* G3  ← same chord */
+
+    /* D3 + F3 chord */
+    {50, 600, 0},    /* D3  ← chord start */
+    {53, 600, 50},   /* F3  ← same chord */
+
+    /* E3 + G3 + B3 chord */
+    {52, 600, 0},    /* E3  ← chord start */
+    {55, 600, 0},    /* G3  ← same chord */
+    {59, 600, 50},   /* B3  ← same chord */
+
+    /* Big finish: C3 alone */
+    {48, 1000, 0},   /* C3 held long */
+};
+static const uint16_t s_chordTestLen = sizeof(s_chordTest) / sizeof(s_chordTest[0]);
+
+void test_chords(void)
+{
+    Serial.println("\r\n=== CHORD TEST ===");
+    NotePlayer_playSequence(s_chordTest, s_chordTestLen);
+    Serial.println("=== CHORD TEST DONE ===\r\n");
+}
+
 
 /* --------------------------------------------------------------------------
  * Test: random notes, directly controlling motor + fingers to guarantee

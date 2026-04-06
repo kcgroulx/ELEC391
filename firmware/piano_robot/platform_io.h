@@ -12,6 +12,7 @@ bool platform_io_get_encoder_a_state(void);
 bool platform_io_get_encoder_b_state(void);
 void platform_io_zero_encoder(void);
 bool platform_io_is_home_switch_active(void);
+bool platform_io_is_far_limit_active(void);
 bool platform_io_is_user_button_active(void);
 void platform_io_set_fingers(uint8_t fingerBitmask);
 uint32_t platform_io_millis(void);

@@ -23,6 +23,7 @@ void test_limitSwitchThenPlay(void);  /* home via limit switch, then play scale 
 void test_randomKeys(void);           /* random notes using all fingers          */
 void test_CmajorScale(void);          /* C major scale C2–C3                    */
 void test_happyBirthday(void);        /* Happy Birthday in C major              */
+void test_chords(void);               /* chord playback test                    */
 void test_solenoidPairs(void);        /* fire all 2-finger combos simultaneously */
 
 #ifdef __cplusplus

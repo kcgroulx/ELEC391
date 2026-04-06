@@ -35,6 +35,7 @@
  * the ISR only writes and the main loop only reads-then-clears. */
 static volatile bool     s_pidPending   = false;
 static volatile bool     s_pidDisabled  = false;
+static volatile bool     s_eStop        = false;   /* emergency stop active */
 
 static volatile float    s_targetMM     = 0.0f;
 static volatile int      s_motorArrived = 0;
@@ -128,10 +129,30 @@ void hal_pidSetEnabled(bool enabled)
     }
 }
 
+int hal_isEStopped(void)
+{
+    return s_eStop ? 1 : 0;
+}
+
+void hal_clearEStop(void)
+{
+    /* Only clear if the far limit switch is no longer active */
+    if (!platform_io_is_far_limit_active()) {
+        s_eStop = false;
+        s_motorArrived = 1;
+        s_settledTicks = 0;
+        pid_reset();
+        Serial.println("[SAFETY] E-stop cleared.");
+    } else {
+        Serial.println("[SAFETY] Cannot clear — far limit switch still active!");
+    }
+}
+
 void piano_hal_init(void)
 {
     s_pidPending   = false;
     s_pidDisabled  = false;
+    s_eStop        = false;
     s_targetMM     = 0.0f;
     s_motorArrived = 1;
     s_settledTicks = 0;
@@ -163,6 +184,21 @@ void hal_runPendingPID(void)
 {
     if (!s_pidPending) return;
     s_pidPending = false;
+
+    /* 0. Safety: far-side limit switch kills motor immediately */
+    if (platform_io_is_far_limit_active()) {
+        motor_control_set_motor_speed(0.0f);
+        hal_fingerReleaseAll();
+        s_eStop = true;
+        s_motorArrived = 1;
+        return;
+    }
+
+    /* If e-stop is latched, keep motor dead until cleared */
+    if (s_eStop) {
+        motor_control_set_motor_speed(0.0f);
+        return;
+    }
 
     /* 1. Update encoder accumulator (always, even during homing) */
     motor_control_update_encoder();

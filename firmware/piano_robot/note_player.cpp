@@ -203,68 +203,126 @@ int NotePlayer_playNoteByName(const char* name, uint32_t durationMs)
 
 
 /* --------------------------------------------------------------------------
- * Finger picker with variety
+ * 5-note lookahead finger/position picker  (dynamic programming)
  *
- * All finger options for a given key land on the same motor position, so
- * travel cost can't differentiate them. Instead we:
- *   1. Penalise reusing the same finger as last note (strong)
- *   2. Penalise reusing the same finger as next note's best option (mild)
- *   3. Among ties, prefer cycling through fingers in order
+ * For the next LOOKAHEAD_DEPTH notes, builds a table of reachable motor
+ * positions, then uses forward DP to find the path (sequence of finger
+ * options) that minimises total carriage travel.  Returns the optimal
+ * FingerOption for the FIRST note in the window.
  *
- * This distributes usage across W1/W2/W3 for white keys and B1/B2 for black.
+ * Complexity:  O(depth * MAX_FINGER_OPTIONS^2)  ≈  5 * 9 = 45 iterations
+ *              — negligible on ESP32 at 240 MHz.
+ *
+ * Falls back to nearest-option if lookup fails (note out of range, etc.).
  * -------------------------------------------------------------------------- */
 
-static FingerOption pickBestOption(const PianoKey* key,
-                                   float currentMM,
-                                   const PianoKey* nextKey,
-                                   Finger lastFinger)
+#define LOOKAHEAD_DEPTH  5U
+
+typedef struct {
+    float   motorMM[MAX_FINGER_OPTIONS];
+    Finger  finger[MAX_FINGER_OPTIONS];
+    uint8_t optIdx[MAX_FINGER_OPTIONS];   /* index into PianoKey.options[] */
+    uint8_t count;                        /* how many reachable options    */
+} LookaheadSlot;
+
+static FingerOption lookaheadPick(const NoteEvent* events,
+                                  uint16_t startIdx,
+                                  uint16_t totalCount,
+                                  float currentMM)
 {
-    FingerOption best;
-    float bestCost = 1e9f;
-    uint8_t i;
+    LookaheadSlot window[LOOKAHEAD_DEPTH];
+    const PianoKey* keys[LOOKAHEAD_DEPTH];
+    float    dp[LOOKAHEAD_DEPTH][MAX_FINGER_OPTIONS];
+    uint8_t  parent[LOOKAHEAD_DEPTH][MAX_FINGER_OPTIONS];
+    uint8_t  depth = 0;
+    uint8_t  i, j, k;
 
-    best.finger          = FINGER_NONE;
-    best.motorPositionMM = -1.0f;
-    best.valid           = 0;
+    /* ── 1. Collect reachable options for each note in the window ──────── */
+    for (i = 0; i < LOOKAHEAD_DEPTH && (startIdx + i) < totalCount; i++) {
+        const PianoKey* key = keyByMidi(events[startIdx + i].midiNote);
+        if (!key) break;
 
-    for (i = 0; i < MAX_FINGER_OPTIONS; i++) {
-        const FingerOption* opt = &key->options[i];
-        float cost, travelHere;
+        keys[i] = key;
+        window[i].count = 0;
 
-        if (!FingerOption_isReachable(opt)) continue;
-
-        /* Cost to reach this option from current position */
-        travelHere = opt->motorPositionMM - currentMM;
-        if (travelHere < 0.0f) travelHere = -travelHere;
-
-        cost = travelHere;
-
-        /* Strong penalty for reusing the finger we just used */
-        if (opt->finger == lastFinger) {
-            cost += 100.0f;
+        for (j = 0; j < MAX_FINGER_OPTIONS; j++) {
+            const FingerOption* fo = &key->options[j];
+            if (!FingerOption_isReachable(fo)) continue;
+            uint8_t c = window[i].count;
+            window[i].motorMM[c] = fo->motorPositionMM;
+            window[i].finger[c]  = fo->finger;
+            window[i].optIdx[c]  = j;
+            window[i].count++;
         }
+        if (window[i].count == 0) break;
+        depth++;
 
-        /* Mild penalty if next note would want this same finger */
-        if (nextKey) {
-            uint8_t j;
-            for (j = 0; j < MAX_FINGER_OPTIONS; j++) {
-                const FingerOption* nopt = &nextKey->options[j];
-                if (!FingerOption_isReachable(nopt)) continue;
-                /* If the next note's first reachable option uses this finger,
-                 * add a small penalty so we leave it free for the next note */
-                if (nopt->finger == opt->finger) {
-                    cost += 10.0f;
-                }
-                break;  /* only check the first reachable next option */
-            }
-        }
-
-        if (cost < bestCost) {
-            bestCost = cost;
-            best     = *opt;
+        /* Stop at chord boundary — if next note has delayAfterMs == 0
+         * it's part of a chord group that the chord planner handles. */
+        if (events[startIdx + i].delayAfterMs == 0 && (startIdx + i + 1) < totalCount) {
+            break;
         }
     }
-    return best;
+
+    /* Fallback: no reachable notes in window */
+    if (depth == 0) {
+        FingerOption invalid = { FINGER_NONE, -1.0f, 0 };
+        return invalid;
+    }
+
+    /* Single note — just pick nearest */
+    if (depth == 1) {
+        return PianoKey_bestOption(keys[0], currentMM);
+    }
+
+    /* ── 2. Forward DP — dp[i][j] = min total travel to reach option j
+     *       of note i.  parent[i][j] = which option at note i-1 led here. */
+
+    /* Base case: travel from current position to each option of note 0 */
+    for (j = 0; j < window[0].count; j++) {
+        float d = window[0].motorMM[j] - currentMM;
+        if (d < 0.0f) d = -d;
+        dp[0][j] = d;
+        parent[0][j] = 0;  /* unused for level 0 */
+    }
+
+    /* Fill levels 1 .. depth-1 */
+    for (i = 1; i < depth; i++) {
+        for (j = 0; j < window[i].count; j++) {
+            dp[i][j] = 1e9f;
+            parent[i][j] = 0;
+            for (k = 0; k < window[i - 1].count; k++) {
+                float d = window[i].motorMM[j] - window[i - 1].motorMM[k];
+                if (d < 0.0f) d = -d;
+                float cost = dp[i - 1][k] + d;
+                if (cost < dp[i][j]) {
+                    dp[i][j] = cost;
+                    parent[i][j] = k;
+                }
+            }
+        }
+    }
+
+    /* ── 3. Trace back from the best option at the last level to level 0 ── */
+    /* Find best at last level */
+    uint8_t bestEnd = 0;
+    float bestEndCost = dp[depth - 1][0];
+    for (j = 1; j < window[depth - 1].count; j++) {
+        if (dp[depth - 1][j] < bestEndCost) {
+            bestEndCost = dp[depth - 1][j];
+            bestEnd = j;
+        }
+    }
+
+    /* Walk parent pointers back to level 0 */
+    uint8_t trace = bestEnd;
+    for (i = depth - 1; i > 0; i--) {
+        trace = parent[i][trace];
+    }
+    /* trace is now the optimal option index at level 0 */
+
+    /* Return the corresponding FingerOption from the PianoKey */
+    return keys[0]->options[window[0].optIdx[trace]];
 }
 
 
@@ -322,7 +380,133 @@ static int playNoteWithOption(const PianoKey* key, const FingerOption* choice,
 
 
 /* --------------------------------------------------------------------------
- * NotePlayer_playSequence — score-timed nearest-position playback
+ * Chord support
+ *
+ * A "chord group" is a set of consecutive NoteEvents whose start times
+ * fall within CHORD_WINDOW_MS of each other.  The planner finds the
+ * single carriage position that lets the most notes (up to MAX_CHORD)
+ * be played simultaneously, then fires all assigned solenoids at once.
+ *
+ * Algorithm:
+ *   1. Collect chord group (up to MAX_CHORD notes within the window).
+ *   2. For every candidate motor position (each finger option of each
+ *      note in the group), score how many OTHER notes in the group
+ *      can be reached by a different finger at that same position.
+ *      White keys are prioritised for assignment.
+ *   3. Pick the position with the highest score.
+ *   4. Move carriage once, press all assigned fingers, hold for the
+ *      shortest note duration, release all.
+ * -------------------------------------------------------------------------- */
+
+#define CHORD_WINDOW_MS   30U    /* notes within this window are one chord   */
+#define MAX_CHORD          3U    /* max simultaneous fingers                 */
+
+/* One assignment: which finger plays which note at what position */
+typedef struct {
+    uint8_t  midiNote;
+    Finger   finger;
+    float    motorMM;       /* all entries share the same motor position     */
+    uint8_t  assigned;      /* 1 = will be played                           */
+} ChordSlot;
+
+/* Try to assign fingers for notes[] at a given candidate motor position.
+ * Returns how many notes got a unique finger.  Fills slots[].
+ * White-key notes are assigned first (prioritised). */
+static uint8_t tryChordAtPosition(float candidateMM,
+                                  const PianoKey* notes[], uint8_t noteCount,
+                                  ChordSlot slots[MAX_CHORD])
+{
+    uint8_t usedFingers = 0;   /* bitmask of Finger enum values already taken */
+    uint8_t assigned = 0;
+    uint8_t pass, n, o;
+
+    /* Clear slots */
+    for (n = 0; n < MAX_CHORD; n++) {
+        slots[n].assigned = 0;
+    }
+
+    /* Two passes: pass 0 = white keys first, pass 1 = black keys */
+    for (pass = 0; pass < 2; pass++) {
+        for (n = 0; n < noteCount && assigned < MAX_CHORD; n++) {
+            if (slots[n].assigned) continue;
+            if (!notes[n]) continue;
+
+            /* Pass 0: white only.  Pass 1: black only. */
+            if (pass == 0 && notes[n]->type != KEY_WHITE) continue;
+            if (pass == 1 && notes[n]->type != KEY_BLACK) continue;
+
+            /* Find a finger option at candidateMM that isn't already used */
+            for (o = 0; o < MAX_FINGER_OPTIONS; o++) {
+                const FingerOption* fo = &notes[n]->options[o];
+                float diff;
+                if (!FingerOption_isReachable(fo)) continue;
+
+                diff = fo->motorPositionMM - candidateMM;
+                if (diff < 0.0f) diff = -diff;
+                if (diff > HAL_ARRIVAL_TOLERANCE_MM) continue;
+
+                /* Check finger not already taken */
+                if (usedFingers & (1U << (uint8_t)fo->finger)) continue;
+
+                /* Assign it */
+                slots[n].midiNote = notes[n]->midiNote;
+                slots[n].finger   = fo->finger;
+                slots[n].motorMM  = candidateMM;
+                slots[n].assigned = 1;
+                usedFingers |= (1U << (uint8_t)fo->finger);
+                assigned++;
+                break;
+            }
+        }
+    }
+    return assigned;
+}
+
+/* Find the best carriage position for a chord group.
+ * Returns number of notes assigned; fills bestSlots[]. */
+static uint8_t planChord(const PianoKey* notes[], uint8_t noteCount,
+                         float currentMM,
+                         ChordSlot bestSlots[MAX_CHORD])
+{
+    uint8_t bestCount = 0;
+    float   bestTravel = 1e9f;
+    uint8_t n, o;
+    ChordSlot trial[MAX_CHORD];
+
+    /* Try every motor position that any note in the group can use */
+    for (n = 0; n < noteCount; n++) {
+        if (!notes[n]) continue;
+        for (o = 0; o < MAX_FINGER_OPTIONS; o++) {
+            const FingerOption* fo = &notes[n]->options[o];
+            float candidateMM, travel;
+            uint8_t count;
+
+            if (!FingerOption_isReachable(fo)) continue;
+            candidateMM = fo->motorPositionMM;
+
+            count = tryChordAtPosition(candidateMM, notes, noteCount, trial);
+
+            /* Pick position that covers the most notes; break ties by
+             * least travel from current position */
+            travel = candidateMM - currentMM;
+            if (travel < 0.0f) travel = -travel;
+
+            if (count > bestCount ||
+                (count == bestCount && travel < bestTravel)) {
+                bestCount  = count;
+                bestTravel = travel;
+                for (uint8_t s = 0; s < MAX_CHORD; s++) {
+                    bestSlots[s] = trial[s];
+                }
+            }
+        }
+    }
+    return bestCount;
+}
+
+
+/* --------------------------------------------------------------------------
+ * NotePlayer_playSequence — chord-aware, score-timed playback
  * -------------------------------------------------------------------------- */
 
 void NotePlayer_playSequence(const NoteEvent* events, uint16_t count)
@@ -331,63 +515,157 @@ void NotePlayer_playSequence(const NoteEvent* events, uint16_t count)
     float currentMM = hal_motorGetPosition();
     uint32_t scheduledStartTick = hal_getTick();
 
-    for (i = 0; i < count; i++) {
+    i = 0;
+    while (i < count) {
         const NoteEvent* e = &events[i];
-        const PianoKey* key = keyByMidi(e->midiNote);
-        FingerOption choice;
-        uint32_t holdMs = scaledHoldMs(e->durationMs);
-        uint32_t intervalToNextStart = e->durationMs + e->delayAfterMs;
 
-        if ((i + 1U) < count && holdMs > intervalToNextStart) {
-            holdMs = intervalToNextStart;
+        /* ── 1. Gather chord group ─────────────────────────────────────── */
+        const PianoKey* chordNotes[MAX_CHORD];
+        const NoteEvent* chordEvents[MAX_CHORD];
+        uint8_t chordSize = 0;
+        uint16_t j;
+
+        /* First note always goes in */
+        chordNotes[0]  = keyByMidi(e->midiNote);
+        chordEvents[0] = e;
+        chordSize = 1;
+
+        /* Look ahead for notes starting within CHORD_WINDOW_MS */
+        for (j = i + 1; j < count && chordSize < MAX_CHORD; j++) {
+            /* delayAfterMs of each preceding note tells us the gap.
+             * Accumulate gaps to see if next note is within window. */
+            uint32_t gap = 0;
+            uint16_t k;
+            for (k = i; k < j; k++) {
+                gap += events[k].delayAfterMs;
+            }
+            if (gap > CHORD_WINDOW_MS) break;
+
+            chordNotes[chordSize]  = keyByMidi(events[j].midiNote);
+            chordEvents[chordSize] = &events[j];
+            chordSize++;
         }
 
-        if (!key) {
+        /* ── 2. Plan: single note or chord ─────────────────────────────── */
+        if (chordSize == 1) {
+            /* --- Single note path with 5-note lookahead --- */
+            const PianoKey* key = chordNotes[0];
+            uint32_t holdMs = scaledHoldMs(e->durationMs);
+            uint32_t intervalToNextStart = e->durationMs + e->delayAfterMs;
+
+            if ((i + 1U) < count && holdMs > intervalToNextStart) {
+                holdMs = intervalToNextStart;
+            }
+
+            if (!key) {
+                waitUntilTick(scheduledStartTick);
+                hal_delay(holdMs);
+                scheduledStartTick += intervalToNextStart;
+                i++;
+                continue;
+            }
+
+            /* Use DP lookahead to pick the option that minimises total
+             * carriage travel over the next 5 notes, not just this one. */
+            FingerOption choice = lookaheadPick(events, i, count, currentMM);
+            if (!choice.valid || !FingerOption_isReachable(&choice)) {
+                waitUntilTick(scheduledStartTick);
+                hal_delay(holdMs);
+                scheduledStartTick += intervalToNextStart;
+                i++;
+                continue;
+            }
+
+            logNoteHeader(key->name, key->midiNote, choice.motorPositionMM, currentMM);
+
+            hal_motorSetTarget(choice.motorPositionMM);
+            hal_motorWaitUntilArrived();
+            logArrival(choice.motorPositionMM);
+
             waitUntilTick(scheduledStartTick);
+
+            hal_fingerPress((uint8_t)choice.finger);
             hal_delay(holdMs);
+            hal_fingerRelease((uint8_t)choice.finger);
+
+            currentMM = choice.motorPositionMM;
             scheduledStartTick += intervalToNextStart;
-            continue;
+            i++;
         }
+        else {
+            /* --- Chord path --- */
+            ChordSlot slots[MAX_CHORD];
+            uint8_t assigned;
+            uint8_t s;
 
-        /* For uploaded MIDI, prefer the nearest reachable option.
-         * This keeps carriage travel predictable on repeated-note melodies
-         * and avoids large back-and-forth moves just to vary fingers. */
-        choice = PianoKey_bestOption(key, currentMM);
+            /* Find shortest duration in the group (all release together) */
+            uint32_t minDur = chordEvents[0]->durationMs;
+            for (s = 1; s < chordSize; s++) {
+                if (chordEvents[s]->durationMs < minDur) {
+                    minDur = chordEvents[s]->durationMs;
+                }
+            }
+            uint32_t holdMs = scaledHoldMs(minDur);
 
-        if (!choice.valid || !FingerOption_isReachable(&choice)) {
+            /* Interval to the note AFTER the entire chord group */
+            uint32_t intervalToNextStart = 0;
+            for (s = 0; s < chordSize; s++) {
+                uint32_t noteInterval = chordEvents[s]->durationMs + chordEvents[s]->delayAfterMs;
+                if (noteInterval > intervalToNextStart) {
+                    intervalToNextStart = noteInterval;
+                }
+            }
+
+            if (holdMs > intervalToNextStart && (i + chordSize) < count) {
+                holdMs = intervalToNextStart;
+            }
+
+            /* Plan finger assignments */
+            assigned = planChord(chordNotes, chordSize, currentMM, slots);
+
+            if (assigned == 0) {
+                waitUntilTick(scheduledStartTick);
+                hal_delay(holdMs);
+                scheduledStartTick += intervalToNextStart;
+                i += chordSize;
+                continue;
+            }
+
+            /* Move to the chord position (all slots share the same motorMM) */
+            float chordMM = currentMM;
+            for (s = 0; s < chordSize; s++) {
+                if (slots[s].assigned) {
+                    chordMM = slots[s].motorMM;
+                    break;
+                }
+            }
+
+            hal_motorSetTarget(chordMM);
+            hal_motorWaitUntilArrived();
+
             waitUntilTick(scheduledStartTick);
+
+            /* Press all assigned fingers simultaneously */
+            for (s = 0; s < chordSize; s++) {
+                if (slots[s].assigned) {
+                    hal_fingerPress((uint8_t)slots[s].finger);
+                }
+            }
+
+            /* Hold for shortest duration */
             hal_delay(holdMs);
+
+            /* Release all */
+            for (s = 0; s < chordSize; s++) {
+                if (slots[s].assigned) {
+                    hal_fingerRelease((uint8_t)slots[s].finger);
+                }
+            }
+
+            currentMM = chordMM;
             scheduledStartTick += intervalToNextStart;
-            continue;
+            i += chordSize;  /* skip past all notes in the chord group */
         }
-
-        logNoteHeader(key->name, key->midiNote, choice.motorPositionMM, currentMM);
-        {
-            char buf[48];
-            snprintf(buf, sizeof(buf), "  %-18s: %s\r\n", "finger",
-                     fingerName(choice.finger));
-            debugLog(buf);
-        }
-
-        hal_motorSetTarget(choice.motorPositionMM);
-        hal_motorWaitUntilArrived();
-        logArrival(choice.motorPositionMM);
-
-        waitUntilTick(scheduledStartTick);
-
-        {
-            char buf[56];
-            snprintf(buf, sizeof(buf), "  [press finger %s  hold %lums]\r\n",
-                     fingerName(choice.finger), (unsigned long)holdMs);
-            debugLog(buf);
-        }
-        hal_fingerPress((uint8_t)choice.finger);
-        hal_delay(holdMs);
-        debugLog("  [release]\r\n");
-        hal_fingerRelease((uint8_t)choice.finger);
-
-        currentMM = choice.motorPositionMM;
-        scheduledStartTick += intervalToNextStart;
     }
 }
 

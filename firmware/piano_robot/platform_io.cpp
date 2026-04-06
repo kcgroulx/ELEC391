@@ -129,6 +129,10 @@ void platform_io_init(void)
     {
         pinMode(app_config::home_switch_pin, INPUT_PULLUP);
     }
+    if (app_config::far_limit_switch_pin >= 0)
+    {
+        pinMode(app_config::far_limit_switch_pin, INPUT_PULLUP);
+    }
     if (app_config::user_button_pin >= 0)
     {
         pinMode(app_config::user_button_pin, INPUT_PULLUP);
@@ -215,6 +219,15 @@ bool platform_io_is_home_switch_active(void)
         return false;
     }
     return digitalRead(app_config::home_switch_pin) == app_config::home_switch_active_level;
+}
+
+bool platform_io_is_far_limit_active(void)
+{
+    if (app_config::far_limit_switch_pin < 0)
+    {
+        return false;
+    }
+    return digitalRead(app_config::far_limit_switch_pin) == app_config::far_limit_active_level;
 }
 
 bool platform_io_is_user_button_active(void)

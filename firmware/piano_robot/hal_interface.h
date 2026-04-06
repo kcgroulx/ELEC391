@@ -47,6 +47,10 @@ void piano_hal_init(void);
 /* Disable/enable PID — use during homing so open-loop drive works */
 void hal_pidSetEnabled(bool enabled);
 
+/* Emergency stop — latched by far-side limit switch, cleared manually */
+int  hal_isEStopped(void);
+void hal_clearEStop(void);
+
 /* Called from ISR — ONLY sets a volatile flag. Safe. */
 void hal_flagPIDPending(void);
 
