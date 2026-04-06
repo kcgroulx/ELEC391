@@ -20,6 +20,7 @@
 #include "midi_parser.h"
 #include "song_player.h"
 #include "platform_io.h"
+#include "config.h"
 
 hw_timer_t* g_pidTimer = NULL;
 /* Default ESP32 serial RX buffering is too small for larger MIDI payloads. */
