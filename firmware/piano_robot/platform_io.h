@@ -6,6 +6,8 @@
 
 void platform_io_init(void);
 void platform_io_set_motor_pwm(float forwardDuty, float reverseDuty);
+void platform_io_set_finger_pressed_duty(float duty);
+float platform_io_get_finger_pressed_duty(void);
 int32_t platform_io_get_encoder_count(void);
 uint32_t platform_io_get_encoder_isr_count(void);
 bool platform_io_get_encoder_a_state(void);

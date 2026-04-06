@@ -29,6 +29,10 @@ constexpr bool finger_active_level = HIGH;
 
 constexpr size_t finger_count = 5U;
 constexpr int finger_pins[finger_count] = {14, 12, 27, 26, 25};
+constexpr uint8_t finger_pwm_channels[finger_count] = {2U, 3U, 4U, 5U, 6U};
+constexpr uint32_t finger_pwm_frequency_hz = 1000U;
+constexpr uint8_t finger_pwm_resolution_bits = 10U;
+constexpr float finger_pwm_pressed_default_duty = 1.0f;
 
 constexpr float encoder_cpr_motor = 64.0f;
 constexpr float gear_ratio = 30.0f;

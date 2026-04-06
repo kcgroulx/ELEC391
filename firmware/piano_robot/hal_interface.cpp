@@ -43,7 +43,7 @@ static volatile uint16_t s_settledTicks = 0;
 
 // Reduced from 100 to 20 ticks: motor is already stopped inside deadband,
 // we just need brief confirmation it is not oscillating through the window.
-static const uint16_t SETTLED_TICKS_REQUIRED = 20U;    /* 20 ms at 1 kHz */
+static const uint16_t SETTLED_TICKS_REQUIRED = 0U;     /* no extra stable ticks */
 
 static uint8_t s_fingerMask = 0;
 
@@ -213,7 +213,8 @@ void hal_runPendingPID(void)
 
     /* 3. Strike-ready check: position + low velocity for several PID ticks */
     if (hal_isStrikeReady(currentMM)) {
-        if (++s_settledTicks >= SETTLED_TICKS_REQUIRED) {
+        if (SETTLED_TICKS_REQUIRED == 0U ||
+            ++s_settledTicks >= SETTLED_TICKS_REQUIRED) {
             s_settledTicks = 0;
             hal_motorNotifyArrived();
         }
