@@ -70,38 +70,63 @@ def make_take_on_me():
 
     # The riff pattern (each note with its rhythm):
     # Format: (midi_note, duration_ticks)
+    # Transposed up 5 semitones (A major → D major) to avoid
+    # hitting the home limit switch on low notes.
+    # Original B3(59)→E4(64), D4(62)→G4(67), E4(64)→A4(69),
+    # F#4(66)→B4(71), G#4(68)→C#5... too high.
+    #
+    # Instead, transpose up 3 semitones (A major → C major):
+    # B3(59)→D4(62), D4(62)→F4(65), E4(64)→G4(67),
+    # F#4(66)→A4(69), G#4(68)→B4(71), A4(69)→C5(72)... C5 out of range.
+    #
+    # Transpose up 2 semitones (A major → B major):
+    # B3(59)→C#4(61), D4(62)→E4(64), E4(64)→F#4(66),
+    # F#4(66)→G#4(68), G#4(68)→A#4(70), A4(69)→B4(71), B4(71)→C#5(73)... out.
+    #
+    # Best: just +2. Lowest=C#4(61), highest=C#5... nope.
+    # Use original but drop the octave-4 high notes by keeping B4 as max.
+    #
+    # Simplest: transpose up 2. Cap B4→B4(71), skip C#5.
+    # Actually A4(69)+2=B4(71), B4(71)+2=C#5(73) out of range.
+    # So transpose +2 but clamp B4+2 back to B4.
+
+    T = 2  # transpose up 2 semitones
+    def tr(n):
+        n2 = n + T
+        return min(n2, 71)  # clamp to B4 max
+
     riff = [
         # Bar 1: F#-F#-D-B---B-E-E-E
-        (66, eighth),          # F#4
-        (66, eighth),          # F#4
-        (62, eighth),          # D4
-        (59, quarter),         # B3
-        (59, eighth),          # B3
-        (64, eighth),          # E4
-        (64, eighth),          # E4
-        (64, eighth),          # E4
+        (tr(66), eighth),      # F#4 → G#4
+        (tr(66), eighth),      # F#4 → G#4
+        (tr(62), eighth),      # D4  → E4
+        (tr(59), quarter),     # B3  → C#4
+        (tr(59), eighth),      # B3  → C#4
+        (tr(64), eighth),      # E4  → F#4
+        (tr(64), eighth),      # E4  → F#4
+        (tr(64), eighth),      # E4  → F#4
 
         # Bar 2: G#-G#-A-B---A-A-A-E
-        (68, eighth),          # G#4
-        (68, eighth),          # G#4
-        (69, eighth),          # A4
-        (71, quarter),         # B4
-        (69, eighth),          # A4
-        (69, eighth),          # A4
-        (69, eighth),          # A4
-        (64, eighth),          # E4
+        (tr(68), eighth),      # G#4 → A#4
+        (tr(68), eighth),      # G#4 → A#4
+        (tr(69), eighth),      # A4  → B4
+        (tr(71), quarter),     # B4  → B4 (clamped)
+        (tr(69), eighth),      # A4  → B4
+        (tr(69), eighth),      # A4  → B4
+        (tr(69), eighth),      # A4  → B4
+        (tr(64), eighth),      # E4  → F#4
 
         # Bar 3: D---D-E-F#-F#---F#-E-E-F#-E
-        (62, quarter),         # D4
-        (62, eighth),          # D4
-        (64, eighth),          # E4
-        (66, eighth),          # F#4
-        (66, quarter),         # F#4
-        (66, eighth),          # F#4
-        (64, eighth),          # E4
-        (64, eighth),          # E4
-        (66, eighth),          # F#4
-        (64, eighth),          # E4
+        (tr(62), quarter),     # D4  → E4
+        (tr(62), eighth),      # D4  → E4
+        (tr(64), eighth),      # E4  → F#4
+        (tr(66), eighth),      # F#4 → G#4
+        (tr(66), quarter),     # F#4 → G#4
+        (tr(66), eighth),      # F#4 → G#4
+        (tr(64), eighth),      # E4  → F#4
+        (tr(64), eighth),      # E4  → F#4
+        (tr(66), eighth),      # F#4 → G#4
+        (tr(64), eighth),      # E4  → F#4
     ]
 
     # Play the riff 3 times
