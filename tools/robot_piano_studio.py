@@ -25,8 +25,10 @@ except ImportError:  # pragma: no cover - only unavailable off Windows
     winsound = None
 
 
-NOTE_MIN = 36
-NOTE_MAX = 71
+EDITOR_NOTE_MIN = 0
+EDITOR_NOTE_MAX = 127
+ROBOT_NOTE_MIN = 36
+ROBOT_NOTE_MAX = 71
 PPQ = 480
 DEFAULT_BPM = 120
 MIN_BEAT_VALUE = 0.125
@@ -107,7 +109,7 @@ class NoteBlock:
 class ImportResult:
     notes: list[NoteBlock]
     bpm: int
-    skipped_out_of_range: int
+    outside_robot_range: int
     ignored_tempo_changes: int
 
 
@@ -135,6 +137,7 @@ class DragState:
     press_midi: int
     original_note: NoteBlock | None
     moved: bool = False
+    selected_note_ids: tuple[int, ...] = ()
 
 
 def clamp(value: float, minimum: float, maximum: float) -> float:
@@ -161,7 +164,7 @@ def note_frequency(midi_note: int) -> float:
 
 def canonicalize_midi_notes(midi_notes: list[int]) -> list[int]:
     unique_notes = sorted(
-        {int(note) for note in midi_notes if NOTE_MIN <= int(note) <= NOTE_MAX}
+        {int(note) for note in midi_notes if ROBOT_NOTE_MIN <= int(note) <= ROBOT_NOTE_MAX}
     )
     if not unique_notes:
         raise ValueError("At least one note must be in range C2-B4.")
@@ -177,7 +180,7 @@ def normalize_beat_value(value: float, minimum: float = 0.0) -> float:
 def sanitize_note(note: NoteBlock) -> NoteBlock:
     return NoteBlock(
         note_id=note.note_id,
-        midi_note=int(clamp(int(note.midi_note), NOTE_MIN, NOTE_MAX)),
+        midi_note=int(clamp(int(note.midi_note), EDITOR_NOTE_MIN, EDITOR_NOTE_MAX)),
         start_beats=normalize_beat_value(note.start_beats, 0.0),
         duration_beats=normalize_beat_value(note.duration_beats, MIN_BEAT_VALUE),
         velocity=int(clamp(int(note.velocity), 30, 127)),
@@ -192,7 +195,7 @@ def sort_notes(notes: list[NoteBlock]) -> list[NoteBlock]:
 
 
 def note_options_for_robot(midi_note: int) -> list[tuple[str, float]]:
-    if not (NOTE_MIN <= midi_note <= NOTE_MAX):
+    if not (ROBOT_NOTE_MIN <= midi_note <= ROBOT_NOTE_MAX):
         return []
 
     options: list[tuple[str, float]] = []
@@ -509,15 +512,14 @@ def load_notes_from_midi(path: Path) -> ImportResult:
             compressed_tempo.append((tick, tempo_us))
 
     bpm = max(1, int(round(60_000_000 / compressed_tempo[0][1])))
-    skipped_out_of_range = 0
+    outside_robot_range = 0
     notes: list[NoteBlock] = []
 
     for start_tick, end_tick, midi_note, velocity in sorted(
         note_spans, key=lambda item: (item[0], item[2], item[1])
     ):
-        if not (NOTE_MIN <= midi_note <= NOTE_MAX):
-            skipped_out_of_range += 1
-            continue
+        if not (ROBOT_NOTE_MIN <= midi_note <= ROBOT_NOTE_MAX):
+            outside_robot_range += 1
         duration_ticks = max(1, end_tick - start_tick)
         notes.append(
             NoteBlock(
@@ -532,7 +534,7 @@ def load_notes_from_midi(path: Path) -> ImportResult:
     return ImportResult(
         notes=notes,
         bpm=bpm,
-        skipped_out_of_range=skipped_out_of_range,
+        outside_robot_range=outside_robot_range,
         ignored_tempo_changes=max(0, len(compressed_tempo) - 1),
     )
 
@@ -652,12 +654,14 @@ class RobotPianoStudio:
         self.notes: list[NoteBlock] = []
         self.next_note_id = 1
         self.selected_note_id: int | None = None
+        self.selected_note_ids: set[int] = set()
         self.current_path: Path | None = None
         self.dirty = False
         self.note_regions: list[tuple[float, float, float, float, int]] = []
         self.keyboard_regions: list[tuple[int, float, float, float, float, bool]] = []
         self.invalid_note_ids: set[int] = set()
         self.invalid_windows: list[ConflictWindow] = []
+        self.out_of_range_note_ids: set[int] = set()
 
         self.drag_state: DragState | None = None
         self.drag_preview: NoteBlock | None = None
@@ -884,14 +888,25 @@ class RobotPianoStudio:
         )
         self.default_velocity_scale.pack(fill="x")
 
+        octave_row = tk.Frame(card, bg=COLORS["panel"])
+        octave_row.pack(fill="x", pady=(10, 0))
+        self._make_panel_button(
+            octave_row, "All Notes -12", lambda: self._transpose_all_notes(-12)
+        ).pack(side="left", fill="x", expand=True, padx=(0, 4))
+        self._make_panel_button(
+            octave_row, "All Notes +12", lambda: self._transpose_all_notes(12)
+        ).pack(side="left", fill="x", expand=True, padx=(4, 0))
+
         tips = tk.Label(
             card,
             text=(
                 "Robot rules:\n"
                 "Range is C2 to B4.\n"
+                "You can still place notes outside that range; they will show in red.\n"
                 "The hand keeps one fixed finger pattern.\n"
                 "White fingers land on W1/W2/W3, black fingers on B1/B2.\n"
-                "Red bands mean the overlapping notes cannot fit one hand position."
+                "Red notes or bands mean the robot cannot play them.\n"
+                "Ctrl-click notes or tree rows to multi-select, then drag to move them together."
             ),
             justify="left",
             bg=COLORS["panel"],
@@ -938,7 +953,7 @@ class RobotPianoStudio:
         self.pitch_combo = ttk.Combobox(
             row,
             textvariable=self.pitch_var,
-            values=[note_name(note) for note in range(NOTE_MIN, NOTE_MAX + 1)],
+            values=[note_name(note) for note in range(EDITOR_NOTE_MIN, EDITOR_NOTE_MAX + 1)],
             state="readonly",
             style="Studio.TCombobox",
         )
@@ -1166,7 +1181,7 @@ class RobotPianoStudio:
             columns=columns,
             show="headings",
             style="Studio.Treeview",
-            selectmode="browse",
+            selectmode="extended",
         )
         self.sequence_tree.heading("index", text="#")
         self.sequence_tree.heading("start", text="Start")
@@ -1297,6 +1312,8 @@ class RobotPianoStudio:
         self.root.bind("<Control-o>", lambda _event: self._open_midi())
         self.root.bind("<Control-s>", lambda _event: self._save_midi_as())
         self.root.bind("<Delete>", lambda _event: self._delete_selected())
+        self.root.bind("<Control-Up>", lambda _event: self._transpose_all_notes(12))
+        self.root.bind("<Control-Down>", lambda _event: self._transpose_all_notes(-12))
 
     # STATE METHODS
     def _coerce_bpm(self) -> int:
@@ -1469,6 +1486,28 @@ class RobotPianoStudio:
         self.next_note_id += 1
         return note
 
+    def _selected_notes(self) -> list[NoteBlock]:
+        selected = [note for note in self.notes if note.note_id in self.selected_note_ids]
+        if not selected and self.selected_note_id is not None:
+            note = self._note_by_id(self.selected_note_id)
+            if note is not None:
+                selected = [note]
+        return selected
+
+    def _set_selection(
+        self, note_ids: set[int], primary_note_id: int | None = None, refresh: bool = False
+    ) -> None:
+        valid_ids = {note.note_id for note in self.notes}
+        self.selected_note_ids = {note_id for note_id in note_ids if note_id in valid_ids}
+        if primary_note_id is not None and primary_note_id in self.selected_note_ids:
+            self.selected_note_id = primary_note_id
+        elif self.selected_note_ids:
+            self.selected_note_id = next(iter(sorted(self.selected_note_ids)))
+        else:
+            self.selected_note_id = None
+        if refresh:
+            self._refresh_views()
+
     def _note_by_id(self, note_id: int | None) -> NoteBlock | None:
         if note_id is None:
             return None
@@ -1489,16 +1528,48 @@ class RobotPianoStudio:
                 return self.notes.pop(index)
         return None
 
+    def _transpose_note_ids(self, note_ids: set[int], semitones: int) -> int:
+        moved = 0
+        for index, note in enumerate(self.notes):
+            if note.note_id not in note_ids:
+                continue
+            self.notes[index] = sanitize_note(
+                NoteBlock(
+                    note_id=note.note_id,
+                    midi_note=note.midi_note + semitones,
+                    start_beats=note.start_beats,
+                    duration_beats=note.duration_beats,
+                    velocity=note.velocity,
+                )
+            )
+            moved += 1
+        return moved
+
+    def _transpose_all_notes(self, semitones: int) -> None:
+        if not self.notes:
+            return
+        moved = self._transpose_note_ids({note.note_id for note in self.notes}, semitones)
+        if moved <= 0:
+            return
+        self._mark_dirty()
+        direction = "up" if semitones > 0 else "down"
+        self.status_var.set(f"Moved all {moved} notes {abs(semitones)} semitones {direction}.")
+        self._refresh_views()
+
     def _notes_equal(self, first: NoteBlock, second: NoteBlock) -> bool:
         return sanitize_note(first) == sanitize_note(second)
 
     def _refresh_views(self) -> None:
         self.notes = sort_notes(self.notes)
+        self._set_selection(self.selected_note_ids, self.selected_note_id, refresh=False)
         self.playback_cursor_beats = round(
             clamp(self.playback_cursor_beats, 0.0, self._song_end_beats()),
             3,
         )
         self.invalid_note_ids, self.invalid_windows = analyze_robot_conflicts(self.notes)
+        self.out_of_range_note_ids = {
+            note.note_id for note in self.notes if not note_options_for_robot(note.midi_note)
+        }
         self._rebuild_tree()
         self._sync_editor_from_selection()
         self._update_warning_banner()
@@ -1509,11 +1580,17 @@ class RobotPianoStudio:
         self._update_title()
 
     def _warning_summary(self, limit: int = 3) -> str:
-        if not self.invalid_windows:
-            return "All overlapping notes currently fit the robot hand."
-        lines = [
-            f"{len(self.invalid_windows)} impossible overlap region(s) detected."
-        ]
+        if not self.invalid_windows and not self.out_of_range_note_ids:
+            return "All notes and overlaps currently fit the robot hand."
+        lines: list[str] = []
+        if self.out_of_range_note_ids:
+            lines.append(
+                f"{len(self.out_of_range_note_ids)} note(s) are outside the robot range C2-B4."
+            )
+        if self.invalid_windows:
+            lines.append(
+                f"{len(self.invalid_windows)} impossible overlap region(s) detected."
+            )
         for window in self.invalid_windows[:limit]:
             lines.append(describe_conflict(window))
         remaining = len(self.invalid_windows) - limit
@@ -1524,30 +1601,29 @@ class RobotPianoStudio:
     def _update_warning_banner(self) -> None:
         self.warning_var.set(self._warning_summary())
         self.warning_label.configure(
-            fg=COLORS["danger"] if self.invalid_windows else COLORS["success"]
+            fg=(
+                COLORS["danger"]
+                if self.invalid_windows or self.out_of_range_note_ids
+                else COLORS["success"]
+            )
         )
 
     def _update_song_info(self) -> None:
         total_seconds = self._song_duration_seconds()
-        invalid_suffix = (
-            f" | {len(self.invalid_windows)} impossible"
-            if self.invalid_windows
-            else ""
-        )
+        issue_count = len(self.invalid_windows) + len(self.out_of_range_note_ids)
+        invalid_suffix = f" | {issue_count} flagged" if issue_count else ""
         self.song_info_var.set(
             f"{len(self.notes)} notes{invalid_suffix} | {total_seconds:.1f} s"
         )
 
     def _update_button_states(self) -> None:
-        has_selection = self._note_by_id(self.selected_note_id) is not None
-        selection_state = "normal" if has_selection else "disabled"
-        for button in (
-            self.apply_button,
-            self.duplicate_button,
-            self.delete_button,
-            self.snap_button,
-        ):
-            button.configure(state=selection_state)
+        selection_count = len(self._selected_notes())
+        has_selection = selection_count > 0
+        single_selection = selection_count == 1
+        self.apply_button.configure(state="normal" if single_selection else "disabled")
+        self.duplicate_button.configure(state="normal" if single_selection else "disabled")
+        for button in (self.delete_button, self.snap_button):
+            button.configure(state="normal" if has_selection else "disabled")
         self.insert_note_button.configure(state="normal")
 
         preview_state = (
@@ -1562,14 +1638,21 @@ class RobotPianoStudio:
         )
 
     def _rebuild_tree(self) -> None:
-        selected_item = (
-            str(self.selected_note_id) if self.selected_note_id is not None else None
-        )
+        selected_items = [str(note_id) for note_id in sorted(self.selected_note_ids)]
         for item in self.sequence_tree.get_children():
             self.sequence_tree.delete(item)
 
         for index, note in enumerate(self.notes):
-            tags = ("invalid",) if note.note_id in self.invalid_note_ids else ()
+            is_out_of_range = note.note_id in self.out_of_range_note_ids
+            is_invalid = note.note_id in self.invalid_note_ids
+            tags = ("invalid",) if (is_invalid or is_out_of_range) else ()
+            state_text = ""
+            if is_out_of_range and is_invalid:
+                state_text = "range+warn"
+            elif is_out_of_range:
+                state_text = "range"
+            elif is_invalid:
+                state_text = "warn"
             self.sequence_tree.insert(
                 "",
                 "end",
@@ -1580,19 +1663,50 @@ class RobotPianoStudio:
                     note_name(note.midi_note),
                     f"{note.duration_beats:.2f}",
                     note.velocity,
-                    "warn" if note.note_id in self.invalid_note_ids else "",
+                    state_text,
                 ),
                 tags=tags,
             )
 
-        if selected_item is not None and self.sequence_tree.exists(selected_item):
-            self.sequence_tree.selection_set(selected_item)
-            self.sequence_tree.see(selected_item)
+        existing_items = [item for item in selected_items if self.sequence_tree.exists(item)]
+        if existing_items:
+            self.sequence_tree.selection_set(existing_items)
+            focus_item = (
+                str(self.selected_note_id)
+                if self.selected_note_id is not None and self.sequence_tree.exists(str(self.selected_note_id))
+                else existing_items[0]
+            )
+            self.sequence_tree.focus(focus_item)
+            self.sequence_tree.see(focus_item)
 
     def _selected_note_conflicts(self, note_id: int) -> list[ConflictWindow]:
         return [window for window in self.invalid_windows if note_id in window.note_ids]
 
     def _sync_editor_from_selection(self) -> None:
+        selected_notes = self._selected_notes()
+        if len(selected_notes) > 1:
+            primary_note = self._note_by_id(self.selected_note_id) or selected_notes[0]
+            self.pitch_var.set(note_name(primary_note.midi_note))
+            self.start_var.set(primary_note.start_beats)
+            self.duration_var.set(primary_note.duration_beats)
+            self.velocity_var.set(primary_note.velocity)
+            self.selected_note_var.set(
+                f"{len(selected_notes)} notes selected | primary {note_name(primary_note.midi_note)}"
+            )
+            out_of_range_count = sum(
+                1 for note in selected_notes if note.note_id in self.out_of_range_note_ids
+            )
+            overlap_count = sum(
+                1 for note in selected_notes if note.note_id in self.invalid_note_ids
+            )
+            plan_lines = ["Drag any selected note to move the full selection together."]
+            if out_of_range_count:
+                plan_lines.append(f"{out_of_range_count} selected note(s) are outside C2-B4.")
+            if overlap_count:
+                plan_lines.append(f"{overlap_count} selected note(s) are in impossible overlaps.")
+            self.robot_plan_var.set("\n".join(plan_lines))
+            return
+
         note = self._note_by_id(self.selected_note_id)
         if note is None:
             self.pitch_var.set("C4")
@@ -1629,27 +1743,27 @@ class RobotPianoStudio:
                 lines.append(f"...and {len(conflicts) - 3} more.")
             self.robot_plan_var.set("\n".join(lines))
         else:
-            self.robot_plan_var.set(
-                f"Playable positions: {describe_note_options(note.midi_note)}"
-            )
+            if note.note_id in self.out_of_range_note_ids:
+                self.robot_plan_var.set("This note is outside the robot range C2-B4.")
+            else:
+                self.robot_plan_var.set(
+                    f"Playable positions: {describe_note_options(note.midi_note)}"
+                )
 
     def _select_note_id(self, note_id: int | None) -> None:
-        if note_id is None or self._note_by_id(note_id) is None:
-            self.selected_note_id = None
-        else:
-            self.selected_note_id = note_id
-        self._refresh_views()
+        self._set_selection(set() if note_id is None else {note_id}, note_id, refresh=True)
 
     def _on_tree_select(self, _event=None) -> None:
-        selection = self.sequence_tree.selection()
-        self.selected_note_id = int(selection[0]) if selection else None
+        selection = tuple(int(item) for item in self.sequence_tree.selection())
+        primary_note_id = int(self.sequence_tree.focus()) if self.sequence_tree.focus() else None
+        self._set_selection(set(selection), primary_note_id, refresh=False)
         self._sync_editor_from_selection()
         self._update_button_states()
         self._draw_timeline()
         self._draw_keyboard()
 
     def _note_name_to_midi(self, label: str) -> int:
-        for midi_note in range(NOTE_MIN, NOTE_MAX + 1):
+        for midi_note in range(EDITOR_NOTE_MIN, EDITOR_NOTE_MAX + 1):
             if note_name(midi_note) == label:
                 return midi_note
         raise ValueError(f"Unknown note name: {label}")
@@ -1689,39 +1803,40 @@ class RobotPianoStudio:
             )
         )
         self.notes.append(duplicate)
-        self.selected_note_id = duplicate.note_id
+        self._set_selection({duplicate.note_id}, duplicate.note_id, refresh=False)
         self._mark_dirty()
         self.status_var.set(f"Duplicated {note_name(note.midi_note)}.")
         self._refresh_views()
 
     def _delete_selected(self) -> None:
-        note = self._note_by_id(self.selected_note_id)
-        if note is None:
+        selected_notes = self._selected_notes()
+        if not selected_notes:
             return
-        deleted = self._remove_note(note.note_id)
-        if deleted is None:
-            return
-        self.selected_note_id = None
+        for note in selected_notes:
+            self._remove_note(note.note_id)
+        deleted_count = len(selected_notes)
+        self._set_selection(set(), None, refresh=False)
         self._mark_dirty()
-        self.status_var.set(f"Deleted {note_name(deleted.midi_note)}.")
+        self.status_var.set(f"Deleted {deleted_count} selected note(s).")
         self._refresh_views()
 
     def _snap_selected_to_grid(self) -> None:
-        note = self._note_by_id(self.selected_note_id)
-        if note is None:
+        selected_notes = self._selected_notes()
+        if not selected_notes:
             return
-        snapped = sanitize_note(
-            NoteBlock(
-                note_id=note.note_id,
-                midi_note=note.midi_note,
-                start_beats=self._snap_beat(note.start_beats),
-                duration_beats=max(self._grid_snap(), self._snap_beat(note.duration_beats)),
-                velocity=note.velocity,
+        for note in selected_notes:
+            snapped = sanitize_note(
+                NoteBlock(
+                    note_id=note.note_id,
+                    midi_note=note.midi_note,
+                    start_beats=self._snap_beat(note.start_beats),
+                    duration_beats=max(self._grid_snap(), self._snap_beat(note.duration_beats)),
+                    velocity=note.velocity,
+                )
             )
-        )
-        self._replace_note(snapped)
+            self._replace_note(snapped)
         self._mark_dirty()
-        self.status_var.set(f"Snapped {note_name(snapped.midi_note)} to the grid.")
+        self.status_var.set(f"Snapped {len(selected_notes)} selected note(s) to the grid.")
         self._refresh_views()
 
     def _insert_note_from_picker(self) -> None:
@@ -1741,7 +1856,7 @@ class RobotPianoStudio:
             )
         )
         self.notes.append(note)
-        self.selected_note_id = note.note_id
+        self._set_selection({note.note_id}, note.note_id, refresh=False)
         self._mark_dirty()
         self.status_var.set(
             f"Inserted {note_name(note.midi_note)} at beat {note.start_beats:.2f}."
@@ -1764,6 +1879,7 @@ class RobotPianoStudio:
         self.notes.clear()
         self.next_note_id = 1
         self.selected_note_id = None
+        self.selected_note_ids.clear()
         self.current_path = None
         self._mark_clean()
         self.status_var.set("Started a new empty song.")
@@ -1788,16 +1904,20 @@ class RobotPianoStudio:
         self._stop_preview()
         self.next_note_id = 1
         self.notes = [self._assign_note_id(note) for note in result.notes]
-        self.selected_note_id = self.notes[0].note_id if self.notes else None
+        self._set_selection(
+            {self.notes[0].note_id} if self.notes else set(),
+            self.notes[0].note_id if self.notes else None,
+            refresh=False,
+        )
         self.current_path = Path(path_str)
         self.bpm_var.set(result.bpm)
         self._mark_clean()
         self._refresh_views()
 
         warnings: list[str] = []
-        if result.skipped_out_of_range:
+        if result.outside_robot_range:
             warnings.append(
-                f"Skipped {result.skipped_out_of_range} note(s) outside C2-B4."
+                f"Imported {result.outside_robot_range} note(s) outside C2-B4; they are shown in red."
             )
         if result.ignored_tempo_changes:
             warnings.append(
@@ -1815,14 +1935,21 @@ class RobotPianoStudio:
         )
 
     def _warn_about_impossible_overlaps(self, action: str) -> bool:
-        if not self.invalid_windows:
+        if not self.invalid_windows and not self.out_of_range_note_ids:
             return True
+        warning_lines: list[str] = []
+        if self.out_of_range_note_ids:
+            warning_lines.append(
+                f"This song has {len(self.out_of_range_note_ids)} note(s) outside the robot range C2-B4."
+            )
+        if self.invalid_windows:
+            warning_lines.append(
+                f"This song has {len(self.invalid_windows)} overlap region(s) that the robot cannot play with one hand pattern."
+            )
         return messagebox.askyesno(
-            "Robot Overlap Warning",
+            "Robot Playability Warning",
             (
-                f"This song has {len(self.invalid_windows)} overlap region(s) that the "
-                f"robot cannot play with one hand pattern.\n\n{self._warning_summary(3)}\n\n"
-                f"{action} anyway?"
+                f"{' '.join(warning_lines)}\n\n{self._warning_summary(3)}\n\n{action} anyway?"
             ),
         )
 
@@ -2007,7 +2134,9 @@ class RobotPianoStudio:
         content_width = max(width, left_margin + total_beats * beat_width + right_margin)
         content_height = max(
             height,
-            top_margin + (NOTE_MAX - NOTE_MIN + 1) * row_height + bottom_margin,
+            top_margin
+            + (EDITOR_NOTE_MAX - EDITOR_NOTE_MIN + 1) * row_height
+            + bottom_margin,
         )
         return {
             "width": width,
@@ -2042,7 +2171,7 @@ class RobotPianoStudio:
     def _midi_to_y(self, midi_note: int, metrics: dict[str, float]) -> tuple[float, float]:
         y1 = (
             metrics["top_margin"]
-            + (NOTE_MAX - midi_note) * metrics["row_height"]
+            + (EDITOR_NOTE_MAX - midi_note) * metrics["row_height"]
             + metrics["row_height"] * 0.12
         )
         y2 = y1 + metrics["row_height"] * 0.76
@@ -2055,8 +2184,8 @@ class RobotPianoStudio:
         ):
             return None
         row = int((y - metrics["top_margin"]) / metrics["row_height"])
-        midi_note = NOTE_MAX - row
-        return int(clamp(midi_note, NOTE_MIN, NOTE_MAX))
+        midi_note = EDITOR_NOTE_MAX - row
+        return int(clamp(midi_note, EDITOR_NOTE_MIN, EDITOR_NOTE_MAX))
 
     def _note_region_at_point(
         self, x: float, y: float
@@ -2076,11 +2205,43 @@ class RobotPianoStudio:
 
     def _selected_pitch_set(self) -> set[int]:
         if self.drag_preview is not None:
+            if self.drag_state is not None and self.drag_state.mode == "move":
+                preview_notes = self._drag_preview_notes()
+                if preview_notes:
+                    return {note.midi_note for note in preview_notes}
             return {self.drag_preview.midi_note}
-        selected = self._note_by_id(self.selected_note_id)
-        if selected is not None:
-            return {selected.midi_note}
-        return set()
+        return {note.midi_note for note in self._selected_notes()}
+
+    def _drag_preview_notes(self) -> list[NoteBlock]:
+        if (
+            self.drag_state is None
+            or self.drag_preview is None
+            or self.drag_state.mode != "move"
+            or self.drag_state.original_note is None
+        ):
+            return []
+
+        beat_delta = (
+            self.drag_preview.start_beats - self.drag_state.original_note.start_beats
+        )
+        pitch_delta = self.drag_preview.midi_note - self.drag_state.original_note.midi_note
+        preview_notes: list[NoteBlock] = []
+        for note_id in self.drag_state.selected_note_ids:
+            note = self._note_by_id(note_id)
+            if note is None:
+                continue
+            preview_notes.append(
+                sanitize_note(
+                    NoteBlock(
+                        note_id=note.note_id,
+                        midi_note=note.midi_note + pitch_delta,
+                        start_beats=note.start_beats + beat_delta,
+                        duration_beats=note.duration_beats,
+                        velocity=note.velocity,
+                    )
+                )
+            )
+        return preview_notes
 
     def _preview_pitch_set(self) -> set[int]:
         return {
@@ -2101,7 +2262,7 @@ class RobotPianoStudio:
         visible_top = canvas.canvasy(0)
         canvas.configure(scrollregion=(0, 0, width, height))
 
-        for midi_note in range(NOTE_MIN, NOTE_MAX + 1):
+        for midi_note in range(EDITOR_NOTE_MIN, EDITOR_NOTE_MAX + 1):
             y1, y2 = self._midi_to_y(midi_note, metrics)
             row_fill = COLORS["timeline_bg"] if not note_is_black(midi_note) else "#142838"
             canvas.create_rectangle(
@@ -2158,11 +2319,15 @@ class RobotPianoStudio:
             fill = COLORS["timeline_note"]
             outline = COLORS["timeline_note_dark"]
             width_px = 1
-            if note.note_id in self.invalid_note_ids:
+            if (
+                note.note_id in self.invalid_note_ids
+                or note.note_id in self.out_of_range_note_ids
+            ):
                 fill = COLORS["timeline_invalid"]
                 outline = "#5c1f24"
-            if note.note_id == self.selected_note_id:
-                fill = COLORS["timeline_selected"]
+            if note.note_id in self.selected_note_ids:
+                if note.note_id not in self.invalid_note_ids and note.note_id not in self.out_of_range_note_ids:
+                    fill = COLORS["timeline_selected"]
                 outline = "#fff2b3"
                 width_px = 2
             if note.note_id in self.preview_active_ids:
@@ -2201,7 +2366,23 @@ class RobotPianoStudio:
                     width=2,
                 )
 
-        if self.drag_preview is not None:
+        preview_notes = self._drag_preview_notes()
+        if preview_notes:
+            for preview_note in preview_notes:
+                x1 = self._beat_to_x(preview_note.start_beats, metrics)
+                x2 = self._beat_to_x(preview_note.end_beats, metrics)
+                y1, y2 = self._midi_to_y(preview_note.midi_note, metrics)
+                canvas.create_rectangle(
+                    x1,
+                    y1,
+                    max(x1 + 4, x2),
+                    y2,
+                    fill=COLORS["timeline_draft"],
+                    outline="#d9f1ff",
+                    width=2,
+                    dash=(4, 2),
+                )
+        elif self.drag_preview is not None:
             x1 = self._beat_to_x(self.drag_preview.start_beats, metrics)
             x2 = self._beat_to_x(self.drag_preview.end_beats, metrics)
             y1, y2 = self._midi_to_y(self.drag_preview.midi_note, metrics)
@@ -2218,7 +2399,7 @@ class RobotPianoStudio:
 
         label_size = max(7, min(9, int(metrics["row_height"] * 0.45)))
         gutter_right = visible_left + metrics["left_margin"]
-        for midi_note in range(NOTE_MIN, NOTE_MAX + 1):
+        for midi_note in range(EDITOR_NOTE_MIN, EDITOR_NOTE_MAX + 1):
             y1, y2 = self._midi_to_y(midi_note, metrics)
             row_fill = COLORS["timeline_bg"] if not note_is_black(midi_note) else "#142838"
             canvas.create_rectangle(
@@ -2319,7 +2500,9 @@ class RobotPianoStudio:
         white_height = height - top - 16
         black_height = white_height * 0.63
         white_key_count = sum(
-            1 for midi_note in range(NOTE_MIN, NOTE_MAX + 1) if not note_is_black(midi_note)
+            1
+            for midi_note in range(ROBOT_NOTE_MIN, ROBOT_NOTE_MAX + 1)
+            if not note_is_black(midi_note)
         )
         white_width = (width - margin * 2) / white_key_count
 
@@ -2327,7 +2510,7 @@ class RobotPianoStudio:
         black_keys: list[tuple[int, float, float, float, float]] = []
 
         white_number = 0
-        for midi_note in range(NOTE_MIN, NOTE_MAX + 1):
+        for midi_note in range(ROBOT_NOTE_MIN, ROBOT_NOTE_MAX + 1):
             if note_is_black(midi_note):
                 continue
             x1 = margin + white_number * white_width
@@ -2335,10 +2518,10 @@ class RobotPianoStudio:
             white_keys.append((midi_note, x1, top, x2, top + white_height))
             white_number += 1
 
-        for midi_note in range(NOTE_MIN, NOTE_MAX + 1):
+        for midi_note in range(ROBOT_NOTE_MIN, ROBOT_NOTE_MAX + 1):
             if not note_is_black(midi_note):
                 continue
-            left_index = white_key_index(midi_note - 1) - white_key_index(NOTE_MIN)
+            left_index = white_key_index(midi_note - 1) - white_key_index(ROBOT_NOTE_MIN)
             black_width = white_width * 0.65
             x1 = margin + (left_index + 1) * white_width - black_width / 2
             x2 = x1 + black_width
@@ -2406,6 +2589,7 @@ class RobotPianoStudio:
         canvas_x = self.timeline_canvas.canvasx(event.x)
         canvas_y = self.timeline_canvas.canvasy(event.y)
         visible_top = self.timeline_canvas.canvasy(0)
+        control_down = bool(event.state & 0x0004)
         beat = self._x_to_beat(canvas_x, metrics)
         midi_note = self._y_to_midi(canvas_y, metrics)
         if canvas_y <= visible_top + metrics["top_margin"]:
@@ -2422,14 +2606,36 @@ class RobotPianoStudio:
             note = self._note_by_id(note_id)
             if note is None:
                 return
-            self.selected_note_id = note_id
+            if control_down:
+                next_selection = set(self.selected_note_ids)
+                if note_id in next_selection:
+                    next_selection.remove(note_id)
+                    primary_note_id = self.selected_note_id
+                    if primary_note_id == note_id:
+                        primary_note_id = next(iter(sorted(next_selection)), None)
+                else:
+                    next_selection.add(note_id)
+                    primary_note_id = note_id
+                self._set_selection(next_selection, primary_note_id, refresh=False)
+                self._sync_editor_from_selection()
+                self._update_button_states()
+                self._draw_timeline()
+                self._draw_keyboard()
+                return
+            mode = "resize" if self._point_hits_resize_handle(canvas_x, region) else "move"
+            if mode == "resize" or note_id not in self.selected_note_ids:
+                selection_ids = {note_id}
+            else:
+                selection_ids = set(self.selected_note_ids)
+            self._set_selection(selection_ids, note_id, refresh=False)
             self.drag_state = DragState(
-                mode="resize" if self._point_hits_resize_handle(canvas_x, region) else "move",
+                mode=mode,
                 note_id=note_id,
                 anchor_beat=note.start_beats,
                 press_beat=beat,
                 press_midi=midi_note,
                 original_note=replace(note),
+                selected_note_ids=tuple(sorted(self.selected_note_ids)),
             )
             self.drag_preview = replace(note)
             self._sync_editor_from_selection()
@@ -2443,7 +2649,7 @@ class RobotPianoStudio:
         )
         velocity = self._coerce_int_var(self.default_velocity_var, 30, 127, 96)
         start_beat = self._snap_beat(beat)
-        self.selected_note_id = None
+        self._set_selection(set(), None, refresh=False)
         self.drag_state = DragState(
             mode="create",
             note_id=None,
@@ -2559,16 +2765,41 @@ class RobotPianoStudio:
                 )
             )
             self.notes.append(new_note)
-            self.selected_note_id = new_note.note_id
+            self._set_selection({new_note.note_id}, new_note.note_id, refresh=False)
             self.status_var.set(
                 f"Placed {note_name(new_note.midi_note)} at beat {new_note.start_beats:.2f}."
             )
             self._mark_dirty()
             changed = True
         elif self.drag_state.original_note is not None:
-            if not self._notes_equal(preview_note, self.drag_state.original_note):
+            if (
+                self.drag_state.mode == "move"
+                and len(self.drag_state.selected_note_ids) > 1
+            ):
+                preview_notes = self._drag_preview_notes()
+                original_by_id = {
+                    note.note_id: note
+                    for note in self.notes
+                    if note.note_id in self.drag_state.selected_note_ids
+                }
+                if any(
+                    original_by_id.get(note.note_id) is None
+                    or not self._notes_equal(note, original_by_id[note.note_id])
+                    for note in preview_notes
+                ):
+                    for note in preview_notes:
+                        self._replace_note(note)
+                    self._set_selection(
+                        set(self.drag_state.selected_note_ids),
+                        self.drag_state.note_id,
+                        refresh=False,
+                    )
+                    self.status_var.set(f"Moved {len(preview_notes)} selected notes together.")
+                    self._mark_dirty()
+                    changed = True
+            elif not self._notes_equal(preview_note, self.drag_state.original_note):
                 self._replace_note(preview_note)
-                self.selected_note_id = preview_note.note_id
+                self._set_selection({preview_note.note_id}, preview_note.note_id, refresh=False)
                 action = "Resized" if self.drag_state.mode == "resize" else "Moved"
                 self.status_var.set(
                     f"{action} {note_name(preview_note.midi_note)} to beat {preview_note.start_beats:.2f}."
@@ -2576,7 +2807,11 @@ class RobotPianoStudio:
                 self._mark_dirty()
                 changed = True
             else:
-                self.selected_note_id = preview_note.note_id
+                self._set_selection(
+                    set(self.drag_state.selected_note_ids) or {preview_note.note_id},
+                    preview_note.note_id,
+                    refresh=False,
+                )
 
         self.drag_state = None
         self.drag_preview = None
@@ -2593,8 +2828,12 @@ class RobotPianoStudio:
         note = self._remove_note(region[4])
         if note is None:
             return
-        if self.selected_note_id == note.note_id:
-            self.selected_note_id = None
+        updated_selection = set(self.selected_note_ids)
+        updated_selection.discard(note.note_id)
+        next_primary = self.selected_note_id
+        if next_primary == note.note_id:
+            next_primary = next(iter(sorted(updated_selection)), None)
+        self._set_selection(updated_selection, next_primary, refresh=False)
         self._mark_dirty()
         self.status_var.set(f"Deleted {note_name(note.midi_note)}.")
         self._refresh_views()

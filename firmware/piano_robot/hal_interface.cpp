@@ -36,6 +36,8 @@
 static volatile bool     s_pidPending   = false;
 static volatile bool     s_pidDisabled  = false;
 static volatile bool     s_eStop        = false;   /* emergency stop active */
+static bool              s_homeSwitchArmed = false;
+static bool              s_farLimitArmed   = false;
 
 static volatile float    s_targetMM     = 0.0f;
 static volatile int      s_motorArrived = 0;
@@ -54,14 +56,22 @@ static uint8_t s_fingerMask = 0;
 static const uint32_t TELEMETRY_PERIOD_TICKS = 1000U;
 static uint32_t       s_telemetryTick = 0U;
 
+static int hal_updateLimitArmState(bool active, bool* armed)
+{
+    if (!active) {
+        *armed = true;
+        return 0;
+    }
+    return *armed ? 1 : 0;
+}
+
 static bool hal_isStrikeReady(float currentMM)
 {
-    const float errorMM = fabsf(s_targetMM - currentMM);
     const float angleErrorDeg = fabsf(pid_get_last_error_deg());
     const float velocityDegPerSec = fabsf(pid_get_last_velocity_deg_per_sec());
+    (void)currentMM;
 
-    return (errorMM <= HAL_ARRIVAL_TOLERANCE_MM)
-        && (angleErrorDeg <= pid_get_deadband_deg())
+    return (angleErrorDeg <= pid_get_deadband_deg())
         && (velocityDegPerSec <= pid_get_settle_velocity_deg_per_sec());
 }
 
@@ -136,16 +146,29 @@ int hal_isEStopped(void)
 
 void hal_clearEStop(void)
 {
-    /* Only clear if the far limit switch is no longer active */
-    if (!platform_io_is_far_limit_active()) {
-        s_eStop = false;
-        s_motorArrived = 1;
-        s_settledTicks = 0;
-        pid_reset();
-        Serial.println("[SAFETY] E-stop cleared.");
-    } else {
-        Serial.println("[SAFETY] Cannot clear — far limit switch still active!");
-    }
+    s_eStop = false;
+    s_motorArrived = 1;
+    s_settledTicks = 0;
+    pid_reset();
+    Serial.println("[SAFETY] E-stop cleared.");
+}
+
+void hal_resetLimitSwitchArming(void)
+{
+    s_homeSwitchArmed = !platform_io_is_home_switch_active();
+    s_farLimitArmed = !platform_io_is_far_limit_active();
+}
+
+int hal_isHomeSwitchFaultActive(void)
+{
+    return hal_updateLimitArmState(platform_io_is_home_switch_active(),
+                                   &s_homeSwitchArmed);
+}
+
+int hal_isFarLimitFaultActive(void)
+{
+    return hal_updateLimitArmState(platform_io_is_far_limit_active(),
+                                   &s_farLimitArmed);
 }
 
 void piano_hal_init(void)
@@ -158,6 +181,7 @@ void piano_hal_init(void)
     s_settledTicks = 0;
     s_fingerMask   = 0;
     s_telemetryTick = 0;
+    hal_resetLimitSwitchArming();
     pid_reset();
 }
 
@@ -185,8 +209,14 @@ void hal_runPendingPID(void)
     if (!s_pidPending) return;
     s_pidPending = false;
 
-    /* 0. Safety: far-side limit switch kills motor immediately */
-    if (platform_io_is_far_limit_active()) {
+    /* 1. Update encoder accumulator (always, even during homing) */
+    motor_control_update_encoder();
+
+    /* If PID is disabled (homing/pause), skip everything else so open-loop drive works */
+    if (s_pidDisabled) return;
+
+    /* 0. Safety: far-side limit switch kills PID-controlled motion immediately */
+    if (hal_isFarLimitFaultActive()) {
         motor_control_set_motor_speed(0.0f);
         hal_fingerReleaseAll();
         s_eStop = true;
@@ -199,12 +229,6 @@ void hal_runPendingPID(void)
         motor_control_set_motor_speed(0.0f);
         return;
     }
-
-    /* 1. Update encoder accumulator (always, even during homing) */
-    motor_control_update_encoder();
-
-    /* If PID is disabled (homing), skip everything else so open-loop drive works */
-    if (s_pidDisabled) return;
 
     /* 2. Compute the next control output */
     float currentMM = motor_control_get_linear_position();
@@ -222,7 +246,7 @@ void hal_runPendingPID(void)
         s_settledTicks = 0;
     }
 
-    /* 4. Periodic telemetry — every TELEMETRY_PERIOD_TICKS ticks (1 s at 1 kHz) */
+    /* 4. Periodic telemetry - every TELEMETRY_PERIOD_TICKS ticks (1 s at 1 kHz) */
     if (++s_telemetryTick >= TELEMETRY_PERIOD_TICKS) {
         s_telemetryTick = 0;
         hal_printTelemetry();
