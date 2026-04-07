@@ -662,8 +662,19 @@ void NotePlayer_playSequence(const NoteEvent* events, uint16_t count)
             hal_motorSetTarget(choice.motorPositionMM);
             hal_motorWaitUntilArrived();
             logArrival(choice.motorPositionMM);
-            logPressLateness(pressTickForNoteStart(scheduledStartTick));
 
+            /* Re-sync: if we arrived late, reset schedule to now so we
+             * don't keep falling further behind on subsequent notes. */
+            {
+                uint32_t pressTick = pressTickForNoteStart(scheduledStartTick);
+                uint32_t now = hal_getTick();
+                if ((int32_t)(now - pressTick) > 0) {
+                    /* We're late — re-sync schedule to current time */
+                    scheduledStartTick = now;
+                }
+            }
+
+            logPressLateness(pressTickForNoteStart(scheduledStartTick));
             waitUntilTick(pressTickForNoteStart(scheduledStartTick));
 
             hal_fingerPress((uint8_t)choice.finger);
@@ -719,8 +730,17 @@ void NotePlayer_playSequence(const NoteEvent* events, uint16_t count)
 
             hal_motorSetTarget(chordMM);
             hal_motorWaitUntilArrived();
-            logPressLateness(pressTickForNoteStart(scheduledStartTick));
 
+            /* Re-sync if late */
+            {
+                uint32_t pressTick = pressTickForNoteStart(scheduledStartTick);
+                uint32_t now = hal_getTick();
+                if ((int32_t)(now - pressTick) > 0) {
+                    scheduledStartTick = now;
+                }
+            }
+
+            logPressLateness(pressTickForNoteStart(scheduledStartTick));
             waitUntilTick(pressTickForNoteStart(scheduledStartTick));
 
             /* Press all assigned fingers simultaneously */
