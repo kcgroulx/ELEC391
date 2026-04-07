@@ -34,7 +34,7 @@ extern "C" {
  * Hardware geometry — EDIT THESE
  * -------------------------------------------------------------------------- */
 
-#define WHITE_KEY_WIDTH_MM   23.5f   /* white key center-to-center (mm)   looks to be around 23.5mm */ 
+#define WHITE_KEY_WIDTH_MM   23.3125f   /* white key center-to-center (mm), tuned so B4 W3 lands at ~373 mm */
 #define MOTOR_ORIGIN_MM       0.0f   /* encoder zero = W1 over C2            */
 #define MOTOR_MIN_MM          0.0f   /* left travel limit                    */
 #define MOTOR_MAX_MM        380.0f   /* physical carriage limit                */

@@ -25,6 +25,7 @@
 #include "pid.h"
 #include "Arduino.h"
 #include <stdio.h>
+#include <string.h>
 
 #define NOTE_PLAYER_ENABLE_DEBUG 0
 
@@ -104,30 +105,9 @@ static void logArrival(float targetMM)
 #endif
 }
 
-static void waitUntilTick(uint32_t targetTick)
-{
-    while ((int32_t)(targetTick - hal_getTick()) > 0) {
-        hal_runPendingPID();
-    }
-}
-
 static uint32_t pressTickForNoteStart(uint32_t noteStartTick)
 {
     return noteStartTick - HAL_SOLENOID_STRIKE_LEAD_MS;
-}
-
-static void logPressLateness(uint32_t pressTick)
-{
-#if NOTE_PLAYER_ENABLE_DEBUG
-    int32_t lateMs = (int32_t)(hal_getTick() - pressTick);
-    if (lateMs > 0) {
-        char buf[48];
-        snprintf(buf, sizeof(buf), "  [late press by %ldms]\r\n", (long)lateMs);
-        Serial.print(buf);
-    }
-#else
-    (void)pressTick;
-#endif
 }
 
 static uint32_t scaledHoldMs(uint32_t durationMs)
@@ -567,183 +547,278 @@ static uint8_t planChord(const PianoKey* notes[], uint8_t noteCount,
     return bestCount;
 }
 
+typedef enum {
+    PLAYBACK_STATE_IDLE = 0,
+    PLAYBACK_STATE_PREPOSITION,
+    PLAYBACK_STATE_MOVE,
+    PLAYBACK_STATE_WAIT_STRIKE,
+    PLAYBACK_STATE_STRIKE,
+    PLAYBACK_STATE_RELEASE,
+    PLAYBACK_STATE_DONE,
+    PLAYBACK_STATE_FAULT
+} PlaybackState;
+
+typedef struct {
+    uint8_t  midiNotes[MAX_CHORD];
+    Finger   fingers[MAX_CHORD];
+    uint8_t  playedCount;
+    float    targetMM;
+    uint32_t startOffsetMs;
+    uint32_t intervalToNextStartMs;
+    uint32_t strikeDurationMs;
+} StrikeGroup;
+
+#define NOTE_PLAYER_MAX_GROUPS 256U
+static StrikeGroup s_strikeGroups[NOTE_PLAYER_MAX_GROUPS];
+
+static const char* playbackStateName(PlaybackState state)
+{
+    switch (state) {
+        case PLAYBACK_STATE_IDLE:         return "IDLE";
+        case PLAYBACK_STATE_PREPOSITION:  return "PREPOSITION";
+        case PLAYBACK_STATE_MOVE:         return "MOVE";
+        case PLAYBACK_STATE_WAIT_STRIKE:  return "WAIT_STRIKE";
+        case PLAYBACK_STATE_STRIKE:       return "STRIKE";
+        case PLAYBACK_STATE_RELEASE:      return "RELEASE";
+        case PLAYBACK_STATE_DONE:         return "DONE";
+        case PLAYBACK_STATE_FAULT:        return "FAULT";
+        default:                          return "UNKNOWN";
+    }
+}
+
+static void emitPlaybackState(PlaybackState state,
+                              uint16_t groupIdx,
+                              uint16_t groupCount,
+                              int32_t lateMs)
+{
+    char buf[96];
+    snprintf(buf, sizeof(buf),
+        "[PLAY] state=%s group=%u/%u late=%ldms\r\n",
+        playbackStateName(state),
+        (unsigned)(groupIdx + 1U),
+        (unsigned)groupCount,
+        (long)lateMs);
+    Serial.print(buf);
+}
+
+static uint32_t staccatoStrikeDurationMs(uint32_t intervalToNextStartMs)
+{
+    uint32_t strikeMs = HAL_STACCATO_STRIKE_MS;
+    uint32_t maxStrikeMs = intervalToNextStartMs;
+
+    if (intervalToNextStartMs > HAL_SOLENOID_STRIKE_LEAD_MS) {
+        maxStrikeMs = intervalToNextStartMs - HAL_SOLENOID_STRIKE_LEAD_MS;
+    }
+
+    if (maxStrikeMs > 0U && strikeMs > maxStrikeMs) {
+        strikeMs = maxStrikeMs;
+    }
+    if (strikeMs < HAL_MIN_PRESS_MS) {
+        strikeMs = HAL_MIN_PRESS_MS;
+    }
+    return strikeMs;
+}
+
+static uint16_t buildStrikeGroups(const NoteEvent* events,
+                                  uint16_t count,
+                                  float initialMM,
+                                  StrikeGroup groups[NOTE_PLAYER_MAX_GROUPS])
+{
+    uint16_t eventIdx = 0U;
+    uint16_t groupIdx = 0U;
+    uint32_t startOffsetMs = 0U;
+    float plannedMM = initialMM;
+
+    while (eventIdx < count && groupIdx < NOTE_PLAYER_MAX_GROUPS) {
+        const PianoKey* chordNotes[MAX_CHORD];
+        const NoteEvent* chordEvents[MAX_CHORD];
+        uint8_t chordSize = gatherChordGroup(
+            events, eventIdx, count, chordNotes, chordEvents);
+        StrikeGroup* group = &groups[groupIdx];
+        uint32_t intervalToNextStartMs = 0U;
+        uint8_t s;
+
+        memset(group, 0, sizeof(*group));
+        group->targetMM = plannedMM;
+        group->startOffsetMs = startOffsetMs;
+
+        for (s = 0; s < chordSize; s++) {
+            uint32_t noteInterval =
+                chordEvents[s]->durationMs + chordEvents[s]->delayAfterMs;
+            if (noteInterval > intervalToNextStartMs) {
+                intervalToNextStartMs = noteInterval;
+            }
+        }
+        group->intervalToNextStartMs = intervalToNextStartMs;
+        group->strikeDurationMs = staccatoStrikeDurationMs(intervalToNextStartMs);
+
+        if (chordSize == 1U) {
+            FingerOption choice = lookaheadPick(events, eventIdx, count, plannedMM);
+            if (choice.valid && FingerOption_isReachable(&choice)) {
+                group->midiNotes[0] = events[eventIdx].midiNote;
+                group->fingers[0] = choice.finger;
+                group->playedCount = 1U;
+                group->targetMM = choice.motorPositionMM;
+                plannedMM = group->targetMM;
+            }
+        } else {
+            ChordSlot slots[MAX_CHORD];
+            uint8_t assigned = planChord(chordNotes, chordSize, plannedMM, slots);
+            float chordMM = plannedMM;
+
+            if (assigned > 0U &&
+                firstAssignedChordPosition(slots, chordSize, &chordMM)) {
+                uint8_t playIdx = 0U;
+                group->targetMM = chordMM;
+                for (s = 0; s < chordSize; s++) {
+                    if (!slots[s].assigned) continue;
+                    group->midiNotes[playIdx] = slots[s].midiNote;
+                    group->fingers[playIdx] = slots[s].finger;
+                    playIdx++;
+                }
+                group->playedCount = playIdx;
+                plannedMM = chordMM;
+            }
+        }
+
+        startOffsetMs += intervalToNextStartMs;
+        eventIdx += chordSize;
+        groupIdx++;
+    }
+
+    return groupIdx;
+}
+
 
 /* --------------------------------------------------------------------------
- * NotePlayer_playSequence — chord-aware, score-timed playback
+ * NotePlayer_playSequence — beat-driven staccato group playback
  * -------------------------------------------------------------------------- */
 
 void NotePlayer_playSequence(const NoteEvent* events, uint16_t count)
 {
-    uint16_t i;
-    float currentMM = hal_motorGetPosition();
-    uint32_t scheduledStartTick;
+    float initialMM = hal_motorGetPosition();
+    uint16_t groupCount = buildStrikeGroups(events, count, initialMM, s_strikeGroups);
+    uint16_t groupIdx = 0U;
+    PlaybackState state;
+    bool stateEntered = true;
+    uint32_t songStartTick;
+    uint32_t strikeReleaseTick = 0U;
+    uint32_t timingSlipMs = 0U;
+    int32_t lateMs = 0;
 
-    if (count == 0U) {
+    if (count == 0U || groupCount == 0U) {
         return;
     }
 
-    /* Pre-position before starting the song clock so the first note can land
-     * on its scheduled downbeat instead of waiting for the first carriage move. */
-    {
-        const PianoKey* firstChordNotes[MAX_CHORD];
-        const NoteEvent* firstChordEvents[MAX_CHORD];
-        uint8_t firstChordSize = gatherChordGroup(
-            events, 0U, count, firstChordNotes, firstChordEvents);
-        float firstTargetMM = currentMM;
-        uint8_t hasFirstTarget = 0U;
+    emitPlaybackState(PLAYBACK_STATE_IDLE, 0U, groupCount, 0);
 
-        if (firstChordSize == 1U) {
-            FingerOption firstChoice = lookaheadPick(events, 0U, count, currentMM);
-            if (firstChoice.valid && FingerOption_isReachable(&firstChoice)) {
-                firstTargetMM = firstChoice.motorPositionMM;
-                hasFirstTarget = 1U;
-            }
-        } else {
-            ChordSlot firstSlots[MAX_CHORD];
-            if (planChord(firstChordNotes, firstChordSize, currentMM, firstSlots) > 0U) {
-                hasFirstTarget = firstAssignedChordPosition(
-                    firstSlots, firstChordSize, &firstTargetMM);
-            }
-        }
-
-        if (hasFirstTarget) {
-            hal_motorSetTarget(firstTargetMM);
+    if (s_strikeGroups[0].playedCount > 0U) {
+        emitPlaybackState(PLAYBACK_STATE_PREPOSITION, 0U, groupCount, 0);
+        if (fabsf(s_strikeGroups[0].targetMM - hal_motorGetPosition()) > HAL_ARRIVAL_TOLERANCE_MM) {
+            hal_motorSetTarget(s_strikeGroups[0].targetMM);
             hal_motorWaitUntilArrived();
-            currentMM = firstTargetMM;
         }
-
-        (void)firstChordEvents;
     }
 
-    scheduledStartTick = hal_getTick() + HAL_SOLENOID_STRIKE_LEAD_MS;
+    songStartTick = hal_getTick() + HAL_SOLENOID_STRIKE_LEAD_MS;
+    state = PLAYBACK_STATE_WAIT_STRIKE;
 
-    i = 0;
-    while (i < count) {
-        const NoteEvent* e = &events[i];
+    while (state != PLAYBACK_STATE_DONE && state != PLAYBACK_STATE_FAULT) {
+        StrikeGroup* group = &s_strikeGroups[groupIdx];
+        uint32_t noteStartTick = songStartTick + group->startOffsetMs + timingSlipMs;
+        uint32_t pressTick = pressTickForNoteStart(noteStartTick);
+        uint32_t now = hal_getTick();
+        uint8_t s;
 
-        /* ── 1. Gather chord group ─────────────────────────────────────── */
-        const PianoKey* chordNotes[MAX_CHORD];
-        const NoteEvent* chordEvents[MAX_CHORD];
-        uint8_t chordSize = gatherChordGroup(
-            events, i, count, chordNotes, chordEvents);
+        hal_runPendingPID();
 
-        /* ── 2. Plan: single note or chord ─────────────────────────────── */
-        if (chordSize == 1) {
-            /* --- Single note path with 5-note lookahead --- */
-            const PianoKey* key = chordNotes[0];
-            uint32_t holdMs = scaledHoldMs(e->durationMs);
-            uint32_t intervalToNextStart = e->durationMs + e->delayAfterMs;
+        switch (state) {
+            case PLAYBACK_STATE_MOVE:
+                if (stateEntered) {
+                    emitPlaybackState(state, groupIdx, groupCount, 0);
+                    stateEntered = false;
 
-            if ((i + 1U) < count && holdMs > intervalToNextStart) {
-                holdMs = intervalToNextStart;
-            }
+                    if (fabsf(group->targetMM - hal_motorGetPosition()) > HAL_ARRIVAL_TOLERANCE_MM) {
+                        hal_motorSetTarget(group->targetMM);
+                    }
+                }
 
-            if (!key) {
-                waitUntilTick(scheduledStartTick);
-                hal_delay(holdMs);
-                scheduledStartTick += intervalToNextStart;
-                i++;
-                continue;
-            }
+                if (hal_motorHasArrived() ||
+                    fabsf(group->targetMM - hal_motorGetPosition()) <= HAL_ARRIVAL_TOLERANCE_MM) {
+                    if ((int32_t)(pressTick - now) > 0) {
+                        state = PLAYBACK_STATE_WAIT_STRIKE;
+                        stateEntered = true;
+                    } else {
+                        lateMs = (int32_t)(now - pressTick);
+                        state = PLAYBACK_STATE_STRIKE;
+                        stateEntered = true;
+                    }
+                }
+                break;
 
-            /* Use DP lookahead to pick the option that minimises total
-             * carriage travel over the next 5 notes, not just this one. */
-            FingerOption choice = lookaheadPick(events, i, count, currentMM);
-            if (!choice.valid || !FingerOption_isReachable(&choice)) {
-                waitUntilTick(scheduledStartTick);
-                hal_delay(holdMs);
-                scheduledStartTick += intervalToNextStart;
-                i++;
-                continue;
-            }
+            case PLAYBACK_STATE_WAIT_STRIKE:
+                if (stateEntered) {
+                    emitPlaybackState(state, groupIdx, groupCount, 0);
+                    stateEntered = false;
+                }
 
-            logNoteHeader(key->name, key->midiNote, choice.motorPositionMM, currentMM);
+                if ((int32_t)(pressTick - now) <= 0) {
+                    lateMs = (now > pressTick) ? (int32_t)(now - pressTick) : 0;
+                    state = PLAYBACK_STATE_STRIKE;
+                    stateEntered = true;
+                }
+                break;
 
-            hal_motorSetTarget(choice.motorPositionMM);
-            hal_motorWaitUntilArrived();
-            logArrival(choice.motorPositionMM);
-            logPressLateness(pressTickForNoteStart(scheduledStartTick));
+            case PLAYBACK_STATE_STRIKE:
+                if (stateEntered) {
+                    emitPlaybackState(state, groupIdx, groupCount, lateMs);
+                    if (lateMs > 0) {
+                        timingSlipMs += (uint32_t)lateMs;
+                    }
+                    for (s = 0; s < group->playedCount; s++) {
+                        hal_fingerPress((uint8_t)group->fingers[s]);
+                    }
+                    strikeReleaseTick = now + group->strikeDurationMs;
+                    stateEntered = false;
+                }
 
-            waitUntilTick(pressTickForNoteStart(scheduledStartTick));
+                if ((int32_t)(strikeReleaseTick - now) <= 0) {
+                    state = PLAYBACK_STATE_RELEASE;
+                    stateEntered = true;
+                }
+                break;
 
-            hal_fingerPress((uint8_t)choice.finger);
-            hal_delay(holdMs);
-            hal_fingerRelease((uint8_t)choice.finger);
+            case PLAYBACK_STATE_RELEASE:
+                if (stateEntered) {
+                    emitPlaybackState(state, groupIdx, groupCount, 0);
+                    hal_fingerReleaseAll();
+                    stateEntered = false;
+                }
 
-            currentMM = choice.motorPositionMM;
-            scheduledStartTick += intervalToNextStart;
-            i++;
+                if ((groupIdx + 1U) >= groupCount) {
+                    state = PLAYBACK_STATE_DONE;
+                    stateEntered = true;
+                } else {
+                    groupIdx++;
+                    lateMs = 0;
+                    state = PLAYBACK_STATE_MOVE;
+                    stateEntered = true;
+                }
+                break;
+
+            default:
+                state = PLAYBACK_STATE_FAULT;
+                stateEntered = true;
+                break;
         }
-        else {
-            /* --- Chord path --- */
-            ChordSlot slots[MAX_CHORD];
-            uint8_t assigned;
-            uint8_t s;
+    }
 
-            /* Find shortest duration in the group (all release together) */
-            uint32_t minDur = chordEvents[0]->durationMs;
-            for (s = 1; s < chordSize; s++) {
-                if (chordEvents[s]->durationMs < minDur) {
-                    minDur = chordEvents[s]->durationMs;
-                }
-            }
-            uint32_t holdMs = scaledHoldMs(minDur);
-
-            /* Interval to the note AFTER the entire chord group */
-            uint32_t intervalToNextStart = 0;
-            for (s = 0; s < chordSize; s++) {
-                uint32_t noteInterval = chordEvents[s]->durationMs + chordEvents[s]->delayAfterMs;
-                if (noteInterval > intervalToNextStart) {
-                    intervalToNextStart = noteInterval;
-                }
-            }
-
-            if (holdMs > intervalToNextStart && (i + chordSize) < count) {
-                holdMs = intervalToNextStart;
-            }
-
-            /* Plan finger assignments */
-            assigned = planChord(chordNotes, chordSize, currentMM, slots);
-
-            if (assigned == 0) {
-                waitUntilTick(scheduledStartTick);
-                hal_delay(holdMs);
-                scheduledStartTick += intervalToNextStart;
-                i += chordSize;
-                continue;
-            }
-
-            /* Move to the chord position (all slots share the same motorMM) */
-            float chordMM = currentMM;
-            (void)firstAssignedChordPosition(slots, chordSize, &chordMM);
-
-            hal_motorSetTarget(chordMM);
-            hal_motorWaitUntilArrived();
-            logPressLateness(pressTickForNoteStart(scheduledStartTick));
-
-            waitUntilTick(pressTickForNoteStart(scheduledStartTick));
-
-            /* Press all assigned fingers simultaneously */
-            for (s = 0; s < chordSize; s++) {
-                if (slots[s].assigned) {
-                    hal_fingerPress((uint8_t)slots[s].finger);
-                }
-            }
-
-            /* Hold for shortest duration */
-            hal_delay(holdMs);
-
-            /* Release all */
-            for (s = 0; s < chordSize; s++) {
-                if (slots[s].assigned) {
-                    hal_fingerRelease((uint8_t)slots[s].finger);
-                }
-            }
-
-            currentMM = chordMM;
-            scheduledStartTick += intervalToNextStart;
-            i += chordSize;  /* skip past all notes in the chord group */
-        }
+    if (state == PLAYBACK_STATE_DONE) {
+        emitPlaybackState(PLAYBACK_STATE_DONE, groupCount - 1U, groupCount, 0);
+        hal_fingerReleaseAll();
+    } else {
+        emitPlaybackState(PLAYBACK_STATE_FAULT, groupIdx, groupCount, lateMs);
+        hal_fingerReleaseAll();
     }
 }
 
