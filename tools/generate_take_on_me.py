@@ -90,10 +90,9 @@ def make_take_on_me():
     # Actually A4(69)+2=B4(71), B4(71)+2=C#5(73) out of range.
     # So transpose +2 but clamp B4+2 back to B4.
 
-    T = 2  # transpose up 2 semitones
+    T = -10  # transpose down 10 semitones (octave down + up 2)
     def tr(n):
-        n2 = n + T
-        return min(n2, 71)  # clamp to B4 max
+        return n + T
 
     riff = [
         # Bar 1: F#-F#-D-B---B-E-E-E
