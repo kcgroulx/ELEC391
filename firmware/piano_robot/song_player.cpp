@@ -11,6 +11,7 @@
  */
 
 #include "song_player.h"
+#include "debug_log.h"
 #include "motor_control.h"
 #include "platform_io.h"
 #include "config.h"
@@ -165,9 +166,9 @@ static const uint16_t s_cmajorLen = sizeof(s_cmajor) / sizeof(s_cmajor[0]);
 
 void test_CmajorScale(void)
 {
-    Serial.println("\r\n=== C MAJOR SCALE (C2-C3) ===");
+    DEBUG_PRINTLN("\r\n=== C MAJOR SCALE (C2-C3) ===");
     NotePlayer_playSequence(s_cmajor, s_cmajorLen);
-    Serial.println("=== C MAJOR SCALE DONE ===\r\n");
+    DEBUG_PRINTLN("=== C MAJOR SCALE DONE ===\r\n");
 }
 
 /* --------------------------------------------------------------------------
@@ -212,9 +213,9 @@ static const uint16_t s_happyBirthdayLen = sizeof(s_happyBirthday) / sizeof(s_ha
 
 void test_happyBirthday(void)
 {
-    Serial.println("\r\n=== HAPPY BIRTHDAY ===");
+    DEBUG_PRINTLN("\r\n=== HAPPY BIRTHDAY ===");
     NotePlayer_playSequence(s_happyBirthday, s_happyBirthdayLen);
-    Serial.println("=== HAPPY BIRTHDAY DONE ===\r\n");
+    DEBUG_PRINTLN("=== HAPPY BIRTHDAY DONE ===\r\n");
 }
 
 /* --------------------------------------------------------------------------
@@ -265,9 +266,9 @@ static const uint16_t s_chordTestLen = sizeof(s_chordTest) / sizeof(s_chordTest[
 
 void test_chords(void)
 {
-    Serial.println("\r\n=== CHORD TEST ===");
+    DEBUG_PRINTLN("\r\n=== CHORD TEST ===");
     NotePlayer_playSequence(s_chordTest, s_chordTestLen);
-    Serial.println("=== CHORD TEST DONE ===\r\n");
+    DEBUG_PRINTLN("=== CHORD TEST DONE ===\r\n");
 }
 
 /* --------------------------------------------------------------------------
@@ -342,9 +343,9 @@ static const uint16_t s_clocksLen = sizeof(s_clocks) / sizeof(s_clocks[0]);
 
 void test_clocks(void)
 {
-    Serial.println("\r\n=== CLOCKS — Coldplay ===");
+    DEBUG_PRINTLN("\r\n=== CLOCKS — Coldplay ===");
     NotePlayer_playSequence(s_clocks, s_clocksLen);
-    Serial.println("=== CLOCKS DONE ===\r\n");
+    DEBUG_PRINTLN("=== CLOCKS DONE ===\r\n");
 }
 
 
@@ -361,7 +362,7 @@ void test_clocks(void)
 
 void test_randomKeys(void)
 {
-    Serial.println("\r\n=== RANDOM KEYS TEST (all fingers) ===");
+    DEBUG_PRINTLN("\r\n=== RANDOM KEYS TEST (all fingers) ===");
 
     /* Finger cycle order — hits all 5 equally */
     const Finger cycle[] = { FINGER_W1, FINGER_B1, FINGER_W2, FINGER_B2, FINGER_W3 };
@@ -402,7 +403,7 @@ void test_randomKeys(void)
         snprintf(buf, sizeof(buf), "  [%2d] %s (midi %u) finger=%s pos=%.1fmm\r\n",
                  n, key->name, key->midiNote,
                  fingerName(opt->finger), (double)opt->motorPositionMM);
-        Serial.print(buf);
+        DEBUG_PRINT(buf);
 
         /* Move motor */
         hal_motorSetTarget(opt->motorPositionMM);
@@ -417,7 +418,7 @@ void test_randomKeys(void)
     }
 
     hal_fingerReleaseAll();
-    Serial.println("=== RANDOM KEYS TEST DONE ===\r\n");
+    DEBUG_PRINTLN("=== RANDOM KEYS TEST DONE ===\r\n");
 }
 
 /* --------------------------------------------------------------------------
@@ -428,17 +429,17 @@ void test_fingersSolenoidOnly(void)
 {
     const char* names[] = {"W1 (GPIO12)", "W2 (GPIO14)", "W3 (GPIO27)",
                            "B1 (GPIO26)", "B2 (GPIO25)"};
-    Serial.println("\r\n=== SOLENOID TEST — no motor movement ===");
+    DEBUG_PRINTLN("\r\n=== SOLENOID TEST — no motor movement ===");
     for (uint8_t i = 0; i < 5; i++) {
         char buf[48];
         snprintf(buf, sizeof(buf), "  Firing finger %s ...\r\n", names[i]);
-        Serial.print(buf);
+        DEBUG_PRINT(buf);
         hal_fingerPress(i);
         hal_delay(400);
         hal_fingerRelease(i);
         hal_delay(200);
     }
-    Serial.println("=== SOLENOID TEST DONE ===\r\n");
+    DEBUG_PRINTLN("=== SOLENOID TEST DONE ===\r\n");
 }
 
 /* --------------------------------------------------------------------------
@@ -452,13 +453,13 @@ void test_solenoidPairs(void)
 {
     const char* names[] = {"W1", "W2", "W3", "B1", "B2"};
 
-    Serial.println("\r\n=== SOLENOID PAIR TEST — no motor movement ===");
+    DEBUG_PRINTLN("\r\n=== SOLENOID PAIR TEST — no motor movement ===");
 
     for (uint8_t a = 0; a < 5; a++) {
         for (uint8_t b = a + 1; b < 5; b++) {
             char buf[48];
             snprintf(buf, sizeof(buf), "  Firing %s + %s ...\r\n", names[a], names[b]);
-            Serial.print(buf);
+            DEBUG_PRINT(buf);
 
             hal_fingerPress(a);
             hal_fingerPress(b);
@@ -470,7 +471,7 @@ void test_solenoidPairs(void)
     }
 
     hal_fingerReleaseAll();
-    Serial.println("=== SOLENOID PAIR TEST DONE ===\r\n");
+    DEBUG_PRINTLN("=== SOLENOID PAIR TEST DONE ===\r\n");
 }
 
 /* --------------------------------------------------------------------------
@@ -494,9 +495,9 @@ static const uint16_t s_fingerTestLen = sizeof(s_fingerTest) / sizeof(s_fingerTe
 
 void test_allFingers(void)
 {
-    Serial.println("\r\n=== FINGER TEST — move + press all 5 fingers ===");
+    DEBUG_PRINTLN("\r\n=== FINGER TEST — move + press all 5 fingers ===");
     NotePlayer_playSequence(s_fingerTest, s_fingerTestLen);
-    Serial.println("=== FINGER TEST DONE ===\r\n");
+    DEBUG_PRINTLN("=== FINGER TEST DONE ===\r\n");
 }
 
 /* --------------------------------------------------------------------------
@@ -513,7 +514,7 @@ void test_printKeyMap(void)
             if (!o->valid) continue;
             snprintf(buf, sizeof(buf), "%s  finger=%s  pos=%.1fmm\r\n",
                 k->name, fingerName(o->finger), o->motorPositionMM);
-            Serial.print(buf);
+            DEBUG_PRINT(buf);
         }
     }
 }
@@ -523,11 +524,11 @@ void test_printKeyMap(void)
  * -------------------------------------------------------------------------- */
 void test_limitSwitchDebug(void)
 {
-    Serial.println("\r\n=== LIMIT SWITCH DEBUG (10s) ===");
-    Serial.print("  home_switch_pin = ");
-    Serial.println(app_config::home_switch_pin);
-    Serial.print("  active_level = ");
-    Serial.println(app_config::home_switch_active_level ? "HIGH" : "LOW");
+    DEBUG_PRINTLN("\r\n=== LIMIT SWITCH DEBUG (10s) ===");
+    DEBUG_PRINT("  home_switch_pin = ");
+    DEBUG_PRINTLN(app_config::home_switch_pin);
+    DEBUG_PRINT("  active_level = ");
+    DEBUG_PRINTLN(app_config::home_switch_active_level ? "HIGH" : "LOW");
 
     for (int i = 0; i < 20; i++) {
         int raw = digitalRead(app_config::home_switch_pin);
@@ -536,10 +537,10 @@ void test_limitSwitchDebug(void)
         snprintf(buf, sizeof(buf),
             "  [%2d] raw=%d  active=%s\r\n",
             i, raw, active ? "YES" : "no");
-        Serial.print(buf);
+        DEBUG_PRINT(buf);
         hal_delay(500);
     }
-    Serial.println("=== LIMIT SWITCH DEBUG DONE ===\r\n");
+    DEBUG_PRINTLN("=== LIMIT SWITCH DEBUG DONE ===\r\n");
 }
 
 
@@ -578,8 +579,8 @@ static void waitForLimitSwitch(void)
 
 void test_limitSwitchThenPlay(void)
 {
-    Serial.println("\r\n=== LIMIT SWITCH HOME + PLAY TEST ===");
-    Serial.println("  Driving negative until limit switch...");
+    DEBUG_PRINTLN("\r\n=== LIMIT SWITCH HOME + PLAY TEST ===");
+    DEBUG_PRINTLN("  Driving negative until limit switch...");
 
     /* Disable PID so open-loop drive isn't overridden */
     hal_pidSetEnabled(false);
@@ -593,7 +594,7 @@ void test_limitSwitchThenPlay(void)
     /* Stop and zero */
     motor_control_set_motor_speed(0.0f);
     motor_control_zero_position();
-    Serial.println("  Limit switch hit — position zeroed.");
+    DEBUG_PRINTLN("  Limit switch hit — position zeroed.");
 
     /* Re-enable PID (resets target to 0, clears state) */
     hal_pidSetEnabled(true);
@@ -602,9 +603,9 @@ void test_limitSwitchThenPlay(void)
     hal_delay(200);
 
     /* Play the demo — chromatic sweep up then down */
-    Serial.println("  Playing demo...");
+    DEBUG_PRINTLN("  Playing demo...");
     NotePlayer_playSequence(s_demo, s_demoLen);
-    Serial.println("=== LIMIT SWITCH HOME + PLAY TEST DONE ===\r\n");
+    DEBUG_PRINTLN("=== LIMIT SWITCH HOME + PLAY TEST DONE ===\r\n");
 }
 
 
@@ -622,12 +623,12 @@ void song_player_homing(void)
 {
     if (app_config::home_switch_pin < 0) {
         /* No home switch configured — just zero the encoder at current pos */
-        Serial.println("No home switch configured — zeroing at current position.");
+        DEBUG_PRINTLN("No home switch configured — zeroing at current position.");
         motor_control_zero_position();
         return;
     }
 
-    Serial.println("Homing...");
+    DEBUG_PRINTLN("Homing...");
 
     /* Disable PID so open-loop drive isn't overridden */
     hal_pidSetEnabled(false);
@@ -645,5 +646,5 @@ void song_player_homing(void)
     /* Re-enable PID (resets target to 0, clears state) */
     hal_pidSetEnabled(true);
     hal_resetLimitSwitchArming();
-    Serial.println("Homing complete.");
+    DEBUG_PRINTLN("Homing complete.");
 }

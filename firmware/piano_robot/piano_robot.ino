@@ -9,8 +9,10 @@
  */
 
 #include "motor_control.h"
+#include "debug_log.h"
 #include "hal_interface.h"
 #include "midi_parser.h"
+#include "planned_song_player.h"
 #include "song_player.h"
 #include "platform_io.h"
 #include "config.h"
@@ -27,7 +29,7 @@ void setup(void)
 {
     Serial.setRxBufferSize(SERIAL_RX_BUFFER_BYTES);
     Serial.begin(115200);
-    Serial.println("Piano robot starting...");
+    DEBUG_PRINTLN("Piano robot starting...");
 
     motor_control_init();
     piano_hal_init();
@@ -36,10 +38,10 @@ void setup(void)
     timerAttachInterrupt(g_pidTimer, &onPIDTimer);
     timerAlarm(g_pidTimer, 1000, true, 0);
 
-    Serial.println("Hardware initialised.");
-    Serial.println("Homing...");
+    DEBUG_PRINTLN("Hardware initialised.");
+    DEBUG_PRINTLN("Homing...");
     song_player_homing();
-    Serial.println("Homing done. Ready.");
+    DEBUG_PRINTLN("Homing done. Ready.");
 }
 
 void loop(void)
@@ -48,7 +50,8 @@ void loop(void)
 
     /* Uncomment ONE active mode: */
     //test_CmajorScale();
-    SongPlayer_run();
+    PlannedSongPlayer_run();
+    //SongPlayer_run();
     //test_solenoidPairs();
     //test_randomKeys();
     //test_limitSwitchThenPlay();

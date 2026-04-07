@@ -29,6 +29,13 @@ import queue
 import re
 import math
 
+from generate_planned_song import (
+    plan_midi_to_steps,
+    serialize_steps_wire,
+    total_step_duration_ms,
+    write_generated_song_files,
+)
+
 # ─── MIDI Parser (pure Python, matches firmware logic) ────────────────────────
 
 NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
@@ -234,6 +241,8 @@ COLORS = {
     'warning':      '#f39c12',
 }
 
+GENERATED_PLANNED_SONG_DIR = Path(__file__).resolve().parent / "generated_planned_songs"
+
 
 # ─── Main Application ────────────────────────────────────────────────────────
 
@@ -255,8 +264,6 @@ class PianoRobotGUI:
         self.current_note_idx = -1
         self.robot_pos_mm = 0.0
         self.robot_target_mm = 0.0
-        self.active_finger = None
-        self.active_keys = set()
         self.is_playing = False
         self.playback_thread = None
         self.stop_playback = False
@@ -266,6 +273,7 @@ class PianoRobotGUI:
         self.ready_probe_after = None
         self.saw_boot_banner = False
         self.serial_pause_reads = False
+        self.current_planned_duration_ms = 0
         self.solenoid_pwm_percent_var = tk.IntVar(value=100)
 
         # Telemetry
@@ -357,12 +365,10 @@ class PianoRobotGUI:
         self._build_file_panel(left)
         self._build_controls_panel(left)
 
-        # Right panel: piano + timeline + log
+        # Right panel: log
         right = tk.Frame(main, bg=COLORS['bg'])
         right.pack(side='left', fill='both', expand=True)
 
-        self._build_piano_panel(right)
-        self._build_timeline_panel(right)
         self._build_log_panel(right)
 
     def _build_file_panel(self, parent):
@@ -415,40 +421,6 @@ class PianoRobotGUI:
                                   relief='flat', padx=16, pady=6)
         self.play_btn.pack(fill='x', pady=2)
 
-        self.stop_btn = tk.Button(btn_grid, text="Stop (Not Supported)",
-                                  command=self._stop, state='disabled',
-                                  bg=COLORS['accent'], fg='white',
-                                  font=('Segoe UI', 10, 'bold'),
-                                  relief='flat', padx=12, pady=4)
-        self.stop_btn.pack(fill='x', pady=2)
-
-        self.home_btn = tk.Button(btn_grid, text="Home Robot",
-                                  command=self._send_home,
-                                  bg=COLORS['accent2'], fg='white',
-                                  font=('Segoe UI', 10),
-                                  relief='flat', padx=12, pady=4)
-        self.home_btn.pack(fill='x', pady=2)
-
-        pwm_frame = tk.Frame(card, bg=COLORS['bg_card'])
-        pwm_frame.pack(fill='x', pady=(8, 0))
-        tk.Label(pwm_frame, text="Solenoid PWM",
-                 font=('Segoe UI', 10, 'bold'),
-                 bg=COLORS['bg_card'], fg=COLORS['text']).pack(anchor='w')
-        pwm_row = tk.Frame(pwm_frame, bg=COLORS['bg_card'])
-        pwm_row.pack(fill='x', pady=(2, 0))
-        self.solenoid_pwm_scale = tk.Scale(
-            pwm_row, from_=0, to=100, orient='horizontal',
-            variable=self.solenoid_pwm_percent_var,
-            bg=COLORS['bg_card'], fg=COLORS['text'],
-            troughcolor=COLORS['bg'], highlightthickness=0,
-            resolution=1, length=170)
-        self.solenoid_pwm_scale.pack(side='left', fill='x', expand=True)
-        self.solenoid_pwm_btn = tk.Button(
-            pwm_row, text="Apply", command=self._send_solenoid_pwm_from_gui,
-            bg=COLORS['accent2'], fg='white',
-            font=('Segoe UI', 9), relief='flat', padx=8)
-        self.solenoid_pwm_btn.pack(side='left', padx=(6, 0))
-
         # Playback progress
         self.progress_var = tk.DoubleVar(value=0)
         self.progress = ttk.Progressbar(card, variable=self.progress_var,
@@ -459,70 +431,6 @@ class PianoRobotGUI:
                                         font=('Segoe UI', 9),
                                         bg=COLORS['bg_card'], fg=COLORS['text_dim'])
         self.progress_label.pack(anchor='w', pady=(2, 0))
-
-        # Note sequence panel
-        seq_card = tk.Frame(parent, bg=COLORS['bg_card'], padx=12, pady=10)
-        seq_card.pack(fill='both', expand=True)
-
-        tk.Label(seq_card, text="Note Sequence", font=('Segoe UI', 12, 'bold'),
-                bg=COLORS['bg_card'], fg=COLORS['text']).pack(anchor='w')
-
-        seq_frame = tk.Frame(seq_card, bg=COLORS['bg_card'])
-        seq_frame.pack(fill='both', expand=True, pady=(6, 0))
-
-        self.note_listbox = tk.Listbox(seq_frame, bg=COLORS['bg'],
-                                        fg=COLORS['text'],
-                                        selectbackground=COLORS['accent'],
-                                        font=('Consolas', 9), relief='flat',
-                                        highlightthickness=0)
-        note_scroll = ttk.Scrollbar(seq_frame, orient='vertical',
-                                     command=self.note_listbox.yview)
-        self.note_listbox.configure(yscrollcommand=note_scroll.set)
-        self.note_listbox.pack(side='left', fill='both', expand=True)
-        note_scroll.pack(side='right', fill='y')
-
-    def _build_piano_panel(self, parent):
-        card = tk.Frame(parent, bg=COLORS['bg_card'], padx=12, pady=10)
-        card.pack(fill='x', pady=(0, 8))
-
-        header = tk.Frame(card, bg=COLORS['bg_card'])
-        header.pack(fill='x')
-        tk.Label(header, text="Piano & Robot Position",
-                font=('Segoe UI', 12, 'bold'),
-                bg=COLORS['bg_card'], fg=COLORS['text']).pack(side='left')
-
-        # Finger legend
-        legend = tk.Frame(header, bg=COLORS['bg_card'])
-        legend.pack(side='right')
-        for name, color in FINGER_COLORS.items():
-            tk.Label(legend, text=f" {name} ", font=('Consolas', 8, 'bold'),
-                    bg=color, fg='white').pack(side='left', padx=1)
-
-        self.piano_canvas = tk.Canvas(card, bg=COLORS['bg'], height=200,
-                                       highlightthickness=0)
-        self.piano_canvas.pack(fill='x', pady=(8, 0))
-        self.piano_canvas.bind('<Configure>', lambda e: self._draw_piano())
-
-        # Position info bar
-        pos_frame = tk.Frame(card, bg=COLORS['bg_card'])
-        pos_frame.pack(fill='x', pady=(6, 0))
-        self.pos_label = tk.Label(pos_frame,
-                                   text="Motor: 0.0mm  |  Target: 0.0mm  |  State: IDLE",
-                                   font=('Consolas', 10),
-                                   bg=COLORS['bg_card'], fg=COLORS['text_dim'])
-        self.pos_label.pack(side='left')
-
-    def _build_timeline_panel(self, parent):
-        card = tk.Frame(parent, bg=COLORS['bg_card'], padx=12, pady=10)
-        card.pack(fill='x', pady=(0, 8))
-
-        tk.Label(card, text="Timeline", font=('Segoe UI', 12, 'bold'),
-                bg=COLORS['bg_card'], fg=COLORS['text']).pack(anchor='w')
-
-        self.timeline_canvas = tk.Canvas(card, bg=COLORS['bg'], height=100,
-                                          highlightthickness=0)
-        self.timeline_canvas.pack(fill='x', pady=(6, 0))
-        self.timeline_canvas.bind('<Configure>', lambda e: self._draw_timeline())
 
     def _build_log_panel(self, parent):
         card = tk.Frame(parent, bg=COLORS['bg_card'], padx=12, pady=10)
@@ -579,15 +487,32 @@ class PianoRobotGUI:
                 fg=COLORS['warning'])
 
     def _estimated_song_duration_ms(self):
+        if self.current_planned_duration_ms > 0:
+            return self.current_planned_duration_ms
         if not self.current_notes:
             return 0
         return int(max(t + d for t, _, d, _ in self.current_notes))
 
+    def _build_planned_song_artifacts(self, midi_path):
+        notes, groups, steps, warnings = plan_midi_to_steps(
+            Path(midi_path),
+            skip_unplayable=True,
+        )
+        basename = f"{Path(midi_path).stem}_planned_song"
+        array_name = f"{Path(midi_path).stem}_song"
+        header_path, source_path = write_generated_song_files(
+            Path(midi_path),
+            output_dir=GENERATED_PLANNED_SONG_DIR,
+            basename=basename,
+            array_name=array_name,
+            steps=steps,
+            source_extension="c",
+        )
+        payload = serialize_steps_wire(steps)
+        total_duration_ms = total_step_duration_ms(steps)
+        return notes, groups, steps, warnings, header_path, source_path, payload, total_duration_ms
+
     def _refresh_runtime_labels(self):
-        self.pos_label.configure(
-            text=f"Motor: {self.tel_pos:.1f}mm  |  Target: {self.tel_target:.1f}mm  "
-                 f"|  State: {self.tel_state}  |  Play: {self.play_state} {self.play_group}  "
-                 f"|  Late: {self.play_late_ms}ms  |  Fingers: 0x{self.tel_fingers:02X}")
         self.tel_label.configure(
             text=f"pos={self.tel_pos:.1f}  tgt={self.tel_target:.1f}  "
                  f"[{self.tel_state}]  play={self.play_state}")
@@ -633,20 +558,6 @@ class PianoRobotGUI:
                 f"short PWM command write: expected {len(command)} bytes, wrote {written}"
             )
         self.serial_port.flush()
-
-    def _send_solenoid_pwm_from_gui(self):
-        percent = self._coerce_solenoid_pwm_percent()
-        if not self.connected or not self.serial_port:
-            messagebox.showinfo("Not Connected", "Connect to the robot first.")
-            return
-        if self.serial_pause_reads:
-            messagebox.showinfo("Serial Busy", "Wait for the current serial transfer to finish.")
-            return
-        try:
-            self._write_solenoid_pwm_command(percent)
-            self._log(f"Set solenoid pressed PWM to {percent}%\n", 'success')
-        except Exception as e:
-            self._log(f"PWM command error: {e}\n", 'info')
 
     def _toggle_connection(self):
         if self.connected:
@@ -698,7 +609,6 @@ class PianoRobotGUI:
 
         self.connect_btn.configure(text="Connect", bg=COLORS['accent'])
         self.status_label.configure(text="Disconnected", fg=COLORS['warning'])
-        self.stop_btn.configure(state='disabled')
         self.progress_label.configure(text="Ready")
         self._refresh_runtime_labels()
         self._log("Disconnected\n", 'info')
@@ -803,8 +713,6 @@ class PianoRobotGUI:
             self.robot_target_mm = self.tel_target
 
             self._refresh_runtime_labels()
-            self._update_active_keys()
-            self._draw_piano()
             self._log(line + '\n', 'telemetry')
             return
 
@@ -812,49 +720,29 @@ class PianoRobotGUI:
         note_match = re.search(r'--- NOTE (\S+) \(midi (\d+)\) ---', line)
         if note_match:
             midi = int(note_match.group(2))
-            self.active_keys.add(midi)
             if self.is_playing:
                 self.progress_label.configure(text="Playing...")
-            self._draw_piano()
             self._log(line + '\n', 'note')
 
-            # Highlight in note list
             for i, n in enumerate(self.current_notes):
                 if i > self.current_note_idx and n[1] == midi:
                     self.current_note_idx = i
-                    self.note_listbox.selection_clear(0, 'end')
-                    self.note_listbox.selection_set(i)
-                    self.note_listbox.see(i)
                     if self.current_notes:
                         self.progress_var.set(100 * (i + 1) / len(self.current_notes))
                     break
-            self._draw_timeline()
             return
 
         # Parse finger press/release
         if '[press' in line:
-            finger_match = re.search(r'press finger (\w+)', line)
-            if finger_match:
-                self.active_finger = finger_match.group(1)
-                self._draw_piano()
             self._log(line + '\n', 'note')
             return
 
         if '[release]' in line:
-            self.active_finger = None
-            self.active_keys.clear()
-            self._draw_piano()
             self._log(line + '\n', 'info')
             return
 
         # Default
         self._log(line + '\n', 'info')
-
-    def _update_active_keys(self):
-        """Update active keys from finger bitmask."""
-        # We can't easily map fingers to notes without knowing motor position,
-        # so we rely on the note parser above for key highlighting.
-        pass
 
     # ── MIDI File Management ──────────────────────────────────────────────
 
@@ -877,6 +765,7 @@ class PianoRobotGUI:
         try:
             notes = parse_midi_file(path)
             self.current_notes = notes
+            self.current_planned_duration_ms = 0
             self.current_note_idx = -1
 
             # Update info
@@ -884,15 +773,6 @@ class PianoRobotGUI:
             midi_range = f"{note_name(min(n[1] for n in notes))}–{note_name(max(n[1] for n in notes))}" if notes else "N/A"
             self.file_info.configure(
                 text=f"{len(notes)} notes  |  {duration/1000:.1f}s  |  Range: {midi_range}")
-
-            # Populate note list
-            self.note_listbox.delete(0, 'end')
-            for i, (t, n, d, v) in enumerate(notes):
-                name = note_name(n)
-                self.note_listbox.insert('end',
-                    f" {i+1:3d}  {t/1000:6.2f}s  {name:4s}  {d:4.0f}ms")
-
-            self._draw_timeline()
             self.progress_var.set(0)
             self.progress_label.configure(text=f"Loaded: {Path(path).name}")
         except Exception as e:
@@ -920,76 +800,116 @@ class PianoRobotGUI:
         self.current_note_idx = -1
         self._cancel_playback_finish()
         self.play_btn.configure(state='disabled')
-        self.stop_btn.configure(state='normal')
         self.progress_var.set(0)
-        self.progress_label.configure(text="Uploading...")
+        self.progress_label.configure(text="Converting MIDI...")
+        self._log(f"[GUIDBG] upload_clicked file={Path(path).name}\n", 'telemetry')
 
-        # Send in background thread
         solenoid_pwm_percent = self._coerce_solenoid_pwm_percent()
         thread = threading.Thread(
-            target=self._send_midi_thread,
-            args=(path, solenoid_pwm_percent),
+            target=self._send_planned_song_thread,
+            args=(path, solenoid_pwm_percent, time.perf_counter()),
             daemon=True)
         thread.start()
 
-    def _send_midi_thread(self, path, solenoid_pwm_percent):
+    def _send_planned_song_thread(self, path, solenoid_pwm_percent, click_start_perf):
+        def post_log(message, tag='telemetry'):
+            self.root.after(0, lambda m=message, t=tag: self._log(m + '\n', t))
+
         try:
-            with open(path, 'rb') as f:
-                data = f.read()
+            midi_path = Path(path)
+            thread_start_perf = time.perf_counter()
+            post_log(
+                f"[GUIDBG] thread_start file={midi_path.name} click_to_thread_ms="
+                f"{int((thread_start_perf - click_start_perf) * 1000)}")
 
-            file_len = len(data)
-            header = struct.pack('>I', file_len)
+            convert_start_perf = time.perf_counter()
+            notes, groups, steps, warnings, header_path, source_path, payload, duration_ms = (
+                self._build_planned_song_artifacts(midi_path)
+            )
+            convert_done_perf = time.perf_counter()
+            self.current_planned_duration_ms = duration_ms
+            post_log(
+                f"[GUIDBG] convert_done ms={int((convert_done_perf - convert_start_perf) * 1000)} "
+                f"notes={len(notes)} groups={len(groups)} steps={len(steps)} "
+                f"payload={len(payload)}B warnings={len(warnings)} duration={duration_ms}ms")
 
-            # Pause the monitor while uploading so Windows serial I/O stays
-            # stable during binary MIDI transfer.
+            self.root.after(0, lambda: self.progress_label.configure(
+                text="Uploading planned song..."))
+
             self.serial_pause_reads = True
+            serial_prepare_start_perf = time.perf_counter()
             time.sleep(0.15)
             try:
                 self.serial_port.reset_output_buffer()
             except Exception:
                 pass
+            try:
+                self.serial_port.reset_input_buffer()
+            except Exception:
+                pass
             self._write_solenoid_pwm_command(solenoid_pwm_percent)
             time.sleep(0.05)
-
-            written = self.serial_port.write(header)
-            if written != len(header):
-                raise IOError(f"short header write: expected {len(header)} bytes, wrote {written}")
+            serial_prepare_done_perf = time.perf_counter()
+            post_log(
+                f"[GUIDBG] serial_prepare_done ms="
+                f"{int((serial_prepare_done_perf - serial_prepare_start_perf) * 1000)} "
+                f"pwm={solenoid_pwm_percent}%")
 
             chunk_size = 64
             sent = 0
             time.sleep(0.02)
-            while sent < file_len:
-                chunk = data[sent:sent + chunk_size]
+            serial_upload_start_perf = time.perf_counter()
+            while sent < len(payload):
+                chunk = payload[sent:sent + chunk_size]
                 chunk_written = self.serial_port.write(chunk)
                 if chunk_written != len(chunk):
                     raise IOError(
-                        f"short data write at offset {sent}: expected {len(chunk)} bytes, "
+                        f"short upload write at offset {sent}: expected {len(chunk)} bytes, "
                         f"wrote {chunk_written}"
                     )
                 sent += chunk_written
-                self.root.after(0, lambda p=(100 * sent / file_len): self.progress_var.set(p))
+                self.root.after(0, lambda p=(100 * sent / len(payload)): self.progress_var.set(p))
                 time.sleep(0.01)
 
             self.serial_port.flush()
+            serial_upload_done_perf = time.perf_counter()
             self.serial_pause_reads = False
-
             self.root.after(0, lambda: self.progress_var.set(100))
+
             self.root.after(0, lambda: self.progress_label.configure(
-                text="Upload complete. Waiting for robot..."))
-            self.root.after(0, lambda: self._log(f"Sent {file_len} bytes\n", 'success'))
-            fallback_ms = max(self._estimated_song_duration_ms() + 2000, 10000)
+                text="Upload complete. Playing planned song..."))
+            post_log(
+                f"[GUIDBG] serial_upload_done ms="
+                f"{int((serial_upload_done_perf - serial_upload_start_perf) * 1000)} "
+                f"bytes={len(payload)}")
+            post_log(
+                f"[GUIDBG] upload_path_total ms="
+                f"{int((serial_upload_done_perf - click_start_perf) * 1000)}")
+            self.root.after(0, lambda: self._log(
+                f"Generated {len(steps)} planned steps from {midi_path.name}\n",
+                'success'))
+            self.root.after(0, lambda: self._log(
+                f"Wrote {header_path.name} and {source_path.name} in {GENERATED_PLANNED_SONG_DIR}\n",
+                'info'))
+            for warning in warnings:
+                self.root.after(0, lambda w=warning: self._log(f"Warning: {w}\n", 'info'))
+            self.root.after(0, lambda: self._log(
+                f"Sent {len(payload)} planned-song bytes\n",
+                'success'))
+            fallback_ms = max(duration_ms + 2000, 5000)
             self.root.after(0, lambda d=fallback_ms: self._schedule_playback_finish(d))
 
         except Exception as e:
             self.serial_pause_reads = False
-            self.root.after(0, lambda: self._log(f"Send error: {e}\n", 'info'))
+            self.current_planned_duration_ms = 0
+            error_text = str(e)
+            self.root.after(0, lambda: self._log(f"Send error: {error_text}\n", 'info'))
             self.root.after(0, lambda: self._playback_finished("Upload failed"))
 
     def _playback_finished(self, status_text=None):
         self._cancel_playback_finish()
         self.is_playing = False
         self.play_btn.configure(state='normal')
-        self.stop_btn.configure(state='disabled')
         if status_text is not None:
             self.progress_label.configure(text=status_text)
         elif self.connected and self.firmware_ready:

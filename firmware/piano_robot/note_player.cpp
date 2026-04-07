@@ -18,6 +18,7 @@
  * ========================================================================== */
 
 #include "note_player.h"
+#include "debug_log.h"
 #include "piano_keymap.h"
 #include "hal_interface.h"
 #include "platform_io.h"
@@ -35,7 +36,7 @@
 
 static void debugLog(const char* msg) {
 #if NOTE_PLAYER_ENABLE_DEBUG
-    Serial.print(msg);
+    DEBUG_PRINT(msg);
 #else
     (void)msg;
 #endif
@@ -46,7 +47,7 @@ static void logFloat(const char* label, float val) {
 #if NOTE_PLAYER_ENABLE_DEBUG
     char buf[64];
     snprintf(buf, sizeof(buf), "  %-18s: %.2f\r\n", label, (double)val);
-    Serial.print(buf);
+    DEBUG_PRINT(buf);
 #else
     (void)label;
     (void)val;
@@ -58,7 +59,7 @@ static void logInt(const char* label, int32_t val) {
 #if NOTE_PLAYER_ENABLE_DEBUG
     char buf[64];
     snprintf(buf, sizeof(buf), "  %-18s: %ld\r\n", label, (long)val);
-    Serial.print(buf);
+    DEBUG_PRINT(buf);
 #else
     (void)label;
     (void)val;
@@ -73,7 +74,7 @@ static void logNoteHeader(const char* noteName, uint8_t midiNote,
     char buf[80];
     snprintf(buf, sizeof(buf),
         "\r\n--- NOTE %s (midi %u) ---\r\n", noteName, (unsigned)midiNote);
-    Serial.print(buf);
+    DEBUG_PRINT(buf);
     logFloat("target_mm",  targetMM);
     logFloat("current_mm", currentMM);
     logFloat("travel_mm",  targetMM - currentMM);
@@ -92,7 +93,7 @@ static void logArrival(float targetMM)
 #if NOTE_PLAYER_ENABLE_DEBUG
     float actualMM  = hal_motorGetPosition();
     float errorMM   = targetMM - actualMM;
-    Serial.print("  [arrived]\r\n");
+    DEBUG_PRINT("  [arrived]\r\n");
     logFloat("actual_mm",       actualMM);
     logFloat("error_mm",        errorMM);
     logInt  ("encoder_cnt",     platform_io_get_encoder_count());
@@ -124,7 +125,7 @@ static void logPressLateness(uint32_t pressTick)
     if (lateMs > 0) {
         char buf[48];
         snprintf(buf, sizeof(buf), "  [late press by %ldms]\r\n", (long)lateMs);
-        Serial.print(buf);
+        DEBUG_PRINT(buf);
     }
 #else
     (void)pressTick;
@@ -622,6 +623,7 @@ static void emitPlaybackState(PlaybackState state,
                               int32_t lateMs,
                               uint32_t durationMs)
 {
+#if PIANO_DEBUG_LOG_ENABLED
     char buf[96];
     const unsigned shownGroup =
         (state == PLAYBACK_STATE_IDLE || totalGroups == 0U) ? 0U : (unsigned)(groupIdx + 1U);
@@ -632,7 +634,14 @@ static void emitPlaybackState(PlaybackState state,
              (unsigned)totalGroups,
              (long)lateMs,
              (unsigned long)durationMs);
-    Serial.print(buf);
+    DEBUG_PRINT(buf);
+#else
+    (void)state;
+    (void)groupIdx;
+    (void)totalGroups;
+    (void)lateMs;
+    (void)durationMs;
+#endif
 }
 
 static uint16_t countStrikeGroups(const NoteEvent* events, uint16_t count)

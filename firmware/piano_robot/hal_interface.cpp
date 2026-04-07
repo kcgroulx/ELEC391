@@ -19,6 +19,7 @@
  */
 
 #include "hal_interface.h"
+#include "debug_log.h"
 #include "motor_control.h"
 #include "platform_io.h"
 #include "config.h"
@@ -68,15 +69,14 @@ static int hal_updateLimitArmState(bool active, bool* armed)
 static bool hal_isStrikeReady(float currentMM)
 {
     const float angleErrorDeg = fabsf(pid_get_last_error_deg());
-    const float velocityDegPerSec = fabsf(pid_get_last_velocity_deg_per_sec());
     (void)currentMM;
 
-    return (angleErrorDeg <= pid_get_deadband_deg())
-        && (velocityDegPerSec <= pid_get_settle_velocity_deg_per_sec());
+    return angleErrorDeg <= pid_get_deadband_deg();
 }
 
 static void hal_printTelemetry(void)
 {
+#if PIANO_DEBUG_LOG_ENABLED
     char buf[96];
     float posMM    = motor_control_get_linear_position();
     float targetMM = s_targetMM;
@@ -122,6 +122,7 @@ static void hal_printTelemetry(void)
             (double)pid_get_kd());
         Serial.print(buf);
     }
+#endif
 }
 
 
@@ -150,7 +151,7 @@ void hal_clearEStop(void)
     s_motorArrived = 1;
     s_settledTicks = 0;
     pid_reset();
-    Serial.println("[SAFETY] E-stop cleared.");
+    DEBUG_PRINTLN("[SAFETY] E-stop cleared.");
 }
 
 void hal_resetLimitSwitchArming(void)

@@ -4,6 +4,7 @@
  */
 
 #include "midi_parser.h"
+#include "debug_log.h"
 #include "piano_keymap.h"
 #include "hal_interface.h"
 #include "platform_io.h"
@@ -582,12 +583,14 @@ uint32_t Midi_receiveUART(uint8_t* buf, uint32_t bufSize, uint32_t timeoutMs)
         }
 
         if (haveDigits) {
-            char msg[64];
             platform_io_set_finger_pressed_duty((float)percent / 100.0f);
+#if PIANO_DEBUG_LOG_ENABLED
+            char msg[64];
             snprintf(msg, sizeof(msg),
                 "[CFG] solenoid press PWM=%d%%\r\n",
                 percent);
-            Serial.print(msg);
+            DEBUG_PRINT(msg);
+#endif
         }
         return 0U;
     }
@@ -644,6 +647,7 @@ void Midi_receiveAndParse(uint8_t*         uartBuf,
 
 void Midi_printResult(const MidiParseResult* result)
 {
+#if PIANO_DEBUG_LOG_ENABLED
     char buf[80];
     const char* statusStr;
 
@@ -665,5 +669,8 @@ void Midi_printResult(const MidiParseResult* result)
         (unsigned)result->notesSkipped,
         (unsigned long)result->durationMs);
 
-    Serial.print(buf);
+    DEBUG_PRINT(buf);
+#else
+    (void)result;
+#endif
 }
