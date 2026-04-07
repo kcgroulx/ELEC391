@@ -773,7 +773,7 @@ class PianoRobotGUI:
             return
 
         play_match = re.search(
-            r'^\[PLAY\]\s+state=(\w+)\s+group=(\d+/\d+)\s+late=(-?\d+)ms$',
+            r'^\[PLAY\]\s+state=(\w+)\s+group=(\d+/\d+)\s+late=(-?\d+)ms(?:\s+dur=(\d+)ms)?$',
             line)
         if play_match:
             self.play_state = play_match.group(1)

@@ -644,5 +644,6 @@ void song_player_homing(void)
 
     /* Re-enable PID (resets target to 0, clears state) */
     hal_pidSetEnabled(true);
+    hal_resetLimitSwitchArming();
     Serial.println("Homing complete.");
 }
