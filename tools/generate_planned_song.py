@@ -43,7 +43,7 @@ DEFAULT_MIN_PRESS_MS = 60
 DEFAULT_MAX_PRESS_MS = 180
 DEFAULT_TRAVEL_RESERVE_MS = 80
 DEFAULT_CHORD_WINDOW_MS = 30
-WIRE_MAGIC = b"PLN1"
+WIRE_MAGIC = b"PLN2"
 WIRE_STEP_STRUCT = struct.Struct(">HBHH")
 
 
@@ -560,28 +560,24 @@ def write_generated_song_files(
     return header_path, source_path
 
 
-def serialize_steps_wire(steps: list[PlannedStep]) -> bytes:
+def serialize_steps_text(steps: list[PlannedStep]) -> str:
     if not steps:
         raise ValueError("At least one planned step is required.")
     if len(steps) > 0xFFFF:
-        raise ValueError("Too many planned steps to send over the wire.")
+        raise ValueError("Too many planned steps to serialize.")
 
-    payload = bytearray()
-    payload += WIRE_MAGIC
-    payload += struct.pack(">H", len(steps))
+    lines = [f"SONG {len(steps)}"]
     for step in steps:
         position_x100 = int(round(step.position_mm * 100.0))
         if not (0 <= position_x100 <= 0xFFFF):
             raise ValueError(
                 f"Step position {step.position_mm:.2f}mm is out of upload range."
             )
-        payload += WIRE_STEP_STRUCT.pack(
-            position_x100,
-            step.fingers_mask & 0xFF,
-            step.press_duration_ms,
-            step.travel_duration_ms,
+        lines.append(
+            f"{position_x100} {step.fingers_mask & 0xFF} "
+            f"{step.press_duration_ms} {step.travel_duration_ms}"
         )
-    return bytes(payload)
+    return "\n".join(lines) + "\n"
 
 
 def parse_args() -> argparse.Namespace:

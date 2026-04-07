@@ -29,13 +29,6 @@ import queue
 import re
 import math
 
-from generate_planned_song import (
-    plan_midi_to_steps,
-    serialize_steps_wire,
-    total_step_duration_ms,
-    write_generated_song_files,
-)
-
 # ─── MIDI Parser (pure Python, matches firmware logic) ────────────────────────
 
 NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
@@ -241,7 +234,9 @@ COLORS = {
     'warning':      '#f39c12',
 }
 
-GENERATED_PLANNED_SONG_DIR = Path(__file__).resolve().parent / "generated_planned_songs"
+TOOLS_DIR = Path(__file__).resolve().parent
+BUNDLED_MIDI_DIR = TOOLS_DIR / "midi"
+GENERATED_PLANNED_SONG_DIR = TOOLS_DIR / "generated_planned_songs"
 
 
 # ─── Main Application ────────────────────────────────────────────────────────
@@ -260,6 +255,7 @@ class PianoRobotGUI:
         self.serial_running = False
         self.serial_queue = queue.Queue()
         self.midi_files = []
+        self.compiled_song_names = {p.stem for p in BUNDLED_MIDI_DIR.glob("*.mid")}
         self.current_notes = []
         self.current_note_idx = -1
         self.robot_pos_mm = 0.0
@@ -414,7 +410,7 @@ class PianoRobotGUI:
         btn_grid = tk.Frame(card, bg=COLORS['bg_card'])
         btn_grid.pack(fill='x', pady=(8, 0))
 
-        self.play_btn = tk.Button(btn_grid, text="Upload & Play",
+        self.play_btn = tk.Button(btn_grid, text="Play Selected Song",
                                   command=self._upload_and_play,
                                   bg='#2ecc71', fg='white',
                                   font=('Segoe UI', 11, 'bold'),
@@ -492,25 +488,6 @@ class PianoRobotGUI:
         if not self.current_notes:
             return 0
         return int(max(t + d for t, _, d, _ in self.current_notes))
-
-    def _build_planned_song_artifacts(self, midi_path):
-        notes, groups, steps, warnings = plan_midi_to_steps(
-            Path(midi_path),
-            skip_unplayable=True,
-        )
-        basename = f"{Path(midi_path).stem}_planned_song"
-        array_name = f"{Path(midi_path).stem}_song"
-        header_path, source_path = write_generated_song_files(
-            Path(midi_path),
-            output_dir=GENERATED_PLANNED_SONG_DIR,
-            basename=basename,
-            array_name=array_name,
-            steps=steps,
-            source_extension="c",
-        )
-        payload = serialize_steps_wire(steps)
-        total_duration_ms = total_step_duration_ms(steps)
-        return notes, groups, steps, warnings, header_path, source_path, payload, total_duration_ms
 
     def _refresh_runtime_labels(self):
         self.tel_label.configure(
@@ -795,112 +772,83 @@ class PianoRobotGUI:
             return
 
         path = self.midi_files[sel[0]]
+        if Path(path).stem not in self.compiled_song_names:
+            messagebox.showinfo(
+                "Song Not Compiled",
+                "This MIDI file is not compiled into the firmware. "
+                "Select one of the bundled songs or rebuild the firmware song catalog."
+            )
+            return
         self.is_playing = True
         self.stop_playback = False
         self.current_note_idx = -1
         self._cancel_playback_finish()
         self.play_btn.configure(state='disabled')
         self.progress_var.set(0)
-        self.progress_label.configure(text="Converting MIDI...")
-        self._log(f"[GUIDBG] upload_clicked file={Path(path).name}\n", 'telemetry')
+        self.progress_label.configure(text="Sending play command...")
+        self._log(f"[GUIDBG] play_clicked file={Path(path).name}\n", 'telemetry')
 
-        solenoid_pwm_percent = self._coerce_solenoid_pwm_percent()
         thread = threading.Thread(
-            target=self._send_planned_song_thread,
-            args=(path, solenoid_pwm_percent, time.perf_counter()),
+            target=self._send_play_command_thread,
+            args=(path, time.perf_counter()),
             daemon=True)
         thread.start()
 
-    def _send_planned_song_thread(self, path, solenoid_pwm_percent, click_start_perf):
+    def _send_play_command_thread(self, path, click_start_perf):
         def post_log(message, tag='telemetry'):
             self.root.after(0, lambda m=message, t=tag: self._log(m + '\n', t))
 
         try:
             midi_path = Path(path)
+            song_name = midi_path.stem
             thread_start_perf = time.perf_counter()
             post_log(
                 f"[GUIDBG] thread_start file={midi_path.name} click_to_thread_ms="
                 f"{int((thread_start_perf - click_start_perf) * 1000)}")
 
-            convert_start_perf = time.perf_counter()
-            notes, groups, steps, warnings, header_path, source_path, payload, duration_ms = (
-                self._build_planned_song_artifacts(midi_path)
-            )
-            convert_done_perf = time.perf_counter()
+            duration_ms = self._estimated_song_duration_ms()
+            command = f"PLAY {song_name}\n".encode("ascii")
             self.current_planned_duration_ms = duration_ms
-            post_log(
-                f"[GUIDBG] convert_done ms={int((convert_done_perf - convert_start_perf) * 1000)} "
-                f"notes={len(notes)} groups={len(groups)} steps={len(steps)} "
-                f"payload={len(payload)}B warnings={len(warnings)} duration={duration_ms}ms")
 
             self.root.after(0, lambda: self.progress_label.configure(
-                text="Uploading planned song..."))
+                text="Sending play command..."))
 
-            self.serial_pause_reads = True
             serial_prepare_start_perf = time.perf_counter()
-            time.sleep(0.15)
             try:
                 self.serial_port.reset_output_buffer()
             except Exception:
                 pass
-            try:
-                self.serial_port.reset_input_buffer()
-            except Exception:
-                pass
-            self._write_solenoid_pwm_command(solenoid_pwm_percent)
-            time.sleep(0.05)
             serial_prepare_done_perf = time.perf_counter()
             post_log(
                 f"[GUIDBG] serial_prepare_done ms="
-                f"{int((serial_prepare_done_perf - serial_prepare_start_perf) * 1000)} "
-                f"pwm={solenoid_pwm_percent}%")
+                f"{int((serial_prepare_done_perf - serial_prepare_start_perf) * 1000)}")
 
-            chunk_size = 64
-            sent = 0
-            time.sleep(0.02)
             serial_upload_start_perf = time.perf_counter()
-            while sent < len(payload):
-                chunk = payload[sent:sent + chunk_size]
-                chunk_written = self.serial_port.write(chunk)
-                if chunk_written != len(chunk):
-                    raise IOError(
-                        f"short upload write at offset {sent}: expected {len(chunk)} bytes, "
-                        f"wrote {chunk_written}"
-                    )
-                sent += chunk_written
-                self.root.after(0, lambda p=(100 * sent / len(payload)): self.progress_var.set(p))
-                time.sleep(0.01)
-
+            sent = self.serial_port.write(command)
+            if sent != len(command):
+                raise IOError(
+                    f"short play-command write: expected {len(command)} bytes, wrote {sent}"
+                )
             self.serial_port.flush()
             serial_upload_done_perf = time.perf_counter()
-            self.serial_pause_reads = False
             self.root.after(0, lambda: self.progress_var.set(100))
 
             self.root.after(0, lambda: self.progress_label.configure(
-                text="Upload complete. Playing planned song..."))
+                text=f"Selected: {song_name}"))
             post_log(
                 f"[GUIDBG] serial_upload_done ms="
                 f"{int((serial_upload_done_perf - serial_upload_start_perf) * 1000)} "
-                f"bytes={len(payload)}")
+                f"bytes={sent} command=PLAY {song_name}")
             post_log(
                 f"[GUIDBG] upload_path_total ms="
                 f"{int((serial_upload_done_perf - click_start_perf) * 1000)}")
             self.root.after(0, lambda: self._log(
-                f"Generated {len(steps)} planned steps from {midi_path.name}\n",
-                'success'))
-            self.root.after(0, lambda: self._log(
-                f"Wrote {header_path.name} and {source_path.name} in {GENERATED_PLANNED_SONG_DIR}\n",
-                'info'))
-            for warning in warnings:
-                self.root.after(0, lambda w=warning: self._log(f"Warning: {w}\n", 'info'))
-            self.root.after(0, lambda: self._log(
-                f"Sent {len(payload)} planned-song bytes\n",
+                f"Sent PLAY command for {song_name}\n",
                 'success'))
             fallback_ms = max(duration_ms + 2000, 5000)
             self.root.after(0, lambda d=fallback_ms: self._schedule_playback_finish(d))
 
         except Exception as e:
-            self.serial_pause_reads = False
             self.current_planned_duration_ms = 0
             error_text = str(e)
             self.root.after(0, lambda: self._log(f"Send error: {error_text}\n", 'info'))
@@ -1147,9 +1095,8 @@ def main():
 
     app = PianoRobotGUI(root)
 
-    # Load any .mid files from the tools directory
-    tools_dir = Path(__file__).parent
-    for mid_file in sorted(tools_dir.glob("*.mid")):
+    # Load bundled .mid files from tools/midi
+    for mid_file in sorted(BUNDLED_MIDI_DIR.glob("*.mid")):
         app.midi_files.append(str(mid_file))
         app.file_listbox.insert('end', f"  {mid_file.name}")
 

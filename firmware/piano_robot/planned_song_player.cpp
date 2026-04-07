@@ -1,25 +1,30 @@
 #include "planned_song_player.h"
 
 #include "Arduino.h"
+#include "chord_showcase_planned_song.h"
 #include "config.h"
 #include "debug_log.h"
 #include "hal_interface.h"
+#include "happy_birthday_better_planned_song.h"
+#include "happy_birthday_planned_song.h"
+#include "married_life_planned_song.h"
 #include "motor_control.h"
+#include "o_canada_chords_planned_song.h"
+#include "o_canada_planned_song.h"
 #include "platform_io.h"
+#include "robot_hand_pattern_test_planned_song.h"
 #include "song_player.h"
+#include "take_on_me_planned_song.h"
+#include <string.h>
 
 namespace
 {
-#define PLANNED_SONG_UART_TIMEOUT_MS     5000U
-#define PLANNED_SONG_BUTTON_DEBOUNCE_MS   200U
-#define PLANNED_SONG_WIRE_MAGIC_0         'P'
-#define PLANNED_SONG_WIRE_MAGIC_1         'L'
-#define PLANNED_SONG_WIRE_MAGIC_2         'N'
-#define PLANNED_SONG_WIRE_MAGIC_3         '1'
+#define PLANNED_SONG_BUTTON_DEBOUNCE_MS  200U
+#define PLANNED_SONG_LINE_MAX             64U
 
 enum PlannedSongRunState
 {
-    PLANNED_SONG_WAITING_FOR_UPLOAD = 0,
+    PLANNED_SONG_WAITING_FOR_SELECTION = 0,
     PLANNED_SONG_PREPOSITION,
     PLANNED_SONG_PRESS,
     PLANNED_SONG_TRAVEL,
@@ -29,35 +34,52 @@ enum PlannedSongRunState
     PLANNED_SONG_FAULTED
 };
 
-enum PlannedSongReceiveResult
+enum PlannedSongCommandResult
 {
-    PLANNED_SONG_RX_NONE = 0,
-    PLANNED_SONG_RX_COMMAND_ONLY,
-    PLANNED_SONG_RX_SONG_READY,
-    PLANNED_SONG_RX_INVALID
+    PLANNED_SONG_CMD_NONE = 0,
+    PLANNED_SONG_CMD_PLAY_SELECTED,
+    PLANNED_SONG_CMD_INVALID
 };
 
-static PlannedSongRunState s_runState = PLANNED_SONG_WAITING_FOR_UPLOAD;
-static PlannedSongRunState s_previousState = PLANNED_SONG_WAITING_FOR_UPLOAD;
+typedef struct {
+    const char* command_name;
+    const PlannedSongStep* steps;
+    uint16_t length;
+} PlannedSongCatalogEntry;
+
+static const PlannedSongCatalogEntry kSongCatalog[] = {
+    { "chord_showcase", g_chord_showcase_song, g_chord_showcase_song_len },
+    { "happy_birthday", g_happy_birthday_song, g_happy_birthday_song_len },
+    { "happy_birthday_better", g_happy_birthday_better_song, g_happy_birthday_better_song_len },
+    { "married_life", g_married_life_song, g_married_life_song_len },
+    { "o_canada", g_o_canada_song, g_o_canada_song_len },
+    { "o_canada_chords", g_o_canada_chords_song, g_o_canada_chords_song_len },
+    { "robot_hand_pattern_test", g_robot_hand_pattern_test_song, g_robot_hand_pattern_test_song_len },
+    { "take_on_me", g_take_on_me_song, g_take_on_me_song_len },
+};
+
+static PlannedSongRunState s_runState = PLANNED_SONG_WAITING_FOR_SELECTION;
+static PlannedSongRunState s_previousState = PLANNED_SONG_WAITING_FOR_SELECTION;
 static PlannedSongRunState s_resumeState = PLANNED_SONG_PREPOSITION;
-static PlannedSongStep s_uploadedSong[PLANNED_SONG_MAX_STEPS];
-static uint16_t s_uploadedSongLen = 0U;
+static const PlannedSongStep* s_activeSong = NULL;
+static const char* s_activeSongName = NULL;
+static uint16_t s_activeSongLen = 0U;
 static uint16_t s_stepIndex = 0U;
 static uint32_t s_deadlineTick = 0U;
 static uint32_t s_pauseStartTick = 0U;
 static uint32_t s_buttonDebounceUntilTick = 0U;
 static uint32_t s_stateEntryTick = 0U;
-static uint32_t s_uploadReceiveStartTick = 0U;
-static uint32_t s_uploadReceiveDoneTick = 0U;
 static uint32_t s_songBeginTick = 0U;
 static uint32_t s_prepositionStartTick = 0U;
 static bool s_buttonPrevState = false;
 static bool s_resumeNeedsRepress = false;
+static size_t s_receiveLineLen = 0U;
+static char s_receiveLine[PLANNED_SONG_LINE_MAX];
 
 const __FlashStringHelper* plannedSongStateName(PlannedSongRunState state)
 {
     switch (state) {
-        case PLANNED_SONG_WAITING_FOR_UPLOAD:
+        case PLANNED_SONG_WAITING_FOR_SELECTION:
             return F("WAITING");
         case PLANNED_SONG_PREPOSITION:
             return F("PREPOSITION");
@@ -78,6 +100,93 @@ const __FlashStringHelper* plannedSongStateName(PlannedSongRunState state)
     }
 }
 
+bool asciiIsSpace(char value)
+{
+    return value == ' ' || value == '\t';
+}
+
+char asciiToLower(char value)
+{
+    if (value >= 'A' && value <= 'Z') {
+        return (char)(value - 'A' + 'a');
+    }
+    return value;
+}
+
+char* trimAsciiWhitespace(char* text)
+{
+    size_t length;
+
+    while (*text != '\0' && asciiIsSpace(*text)) {
+        text++;
+    }
+
+    length = strlen(text);
+    while (length > 0U && asciiIsSpace(text[length - 1U])) {
+        text[length - 1U] = '\0';
+        length--;
+    }
+
+    return text;
+}
+
+bool asciiEqualsIgnoreCase(const char* left, const char* right)
+{
+    while (*left != '\0' && *right != '\0') {
+        if (asciiToLower(*left) != asciiToLower(*right)) {
+            return false;
+        }
+        left++;
+        right++;
+    }
+    return *left == '\0' && *right == '\0';
+}
+
+void stripOptionalMidExtension(char* songName)
+{
+    size_t length = strlen(songName);
+
+    if (length > 4U &&
+            asciiToLower(songName[length - 4U]) == '.' &&
+            asciiToLower(songName[length - 3U]) == 'm' &&
+            asciiToLower(songName[length - 2U]) == 'i' &&
+            asciiToLower(songName[length - 1U]) == 'd') {
+        songName[length - 4U] = '\0';
+    }
+}
+
+const PlannedSongCatalogEntry* findSongEntry(const char* songName)
+{
+    size_t index;
+
+    for (index = 0U; index < (sizeof(kSongCatalog) / sizeof(kSongCatalog[0])); ++index) {
+        if (asciiEqualsIgnoreCase(songName, kSongCatalog[index].command_name)) {
+            return &kSongCatalog[index];
+        }
+    }
+
+    return NULL;
+}
+
+void clearCommandLineState(void)
+{
+    s_receiveLineLen = 0U;
+    s_receiveLine[0] = '\0';
+}
+
+void clearSelectedSongState(void)
+{
+    s_activeSong = NULL;
+    s_activeSongName = NULL;
+    s_activeSongLen = 0U;
+    s_stepIndex = 0U;
+    s_deadlineTick = 0U;
+    s_pauseStartTick = 0U;
+    s_songBeginTick = 0U;
+    s_prepositionStartTick = 0U;
+    s_resumeNeedsRepress = false;
+}
+
 void logStateTransition(PlannedSongRunState previousState, PlannedSongRunState nextState, uint32_t now)
 {
     DEBUG_PRINT(F("[PLANDBG] state="));
@@ -89,13 +198,13 @@ void logStateTransition(PlannedSongRunState previousState, PlannedSongRunState n
     DEBUG_PRINT(F(" prev_ms="));
     DEBUG_PRINT(now - s_stateEntryTick);
     DEBUG_PRINT(F(" step="));
-    if (s_uploadedSongLen == 0U) {
+    if (s_activeSongLen == 0U) {
         DEBUG_PRINT(0U);
     } else {
         DEBUG_PRINT((uint32_t)s_stepIndex + 1U);
     }
     DEBUG_PRINT(F("/"));
-    DEBUG_PRINT(s_uploadedSongLen);
+    DEBUG_PRINT(s_activeSongLen);
     DEBUG_PRINTLN(F(""));
 }
 
@@ -112,162 +221,112 @@ void plannedAbortForFault(void)
     hal_fingerReleaseAll();
 }
 
-bool readByteWithTimeout(int* outByte, uint32_t* deadlineTick, uint32_t timeoutMs)
+bool readLineFromSerial(char* outLine, size_t outLineSize)
 {
-    while ((int32_t)(*deadlineTick - (uint32_t)millis()) > 0) {
-        hal_runPendingPID();
-        if (Serial.available() > 0) {
-            *outByte = Serial.read();
-            *deadlineTick = (uint32_t)millis() + timeoutMs;
+    while (Serial.available() > 0) {
+        const int byteValue = Serial.read();
+
+        if (byteValue < 0) {
+            break;
+        }
+        if (byteValue == '\r') {
+            continue;
+        }
+        if (byteValue == '\n') {
+            if (s_receiveLineLen == 0U) {
+                continue;
+            }
+            if (s_receiveLineLen >= outLineSize) {
+                clearCommandLineState();
+                return false;
+            }
+
+            s_receiveLine[s_receiveLineLen] = '\0';
+            memcpy(outLine, s_receiveLine, s_receiveLineLen + 1U);
+            clearCommandLineState();
             return true;
         }
+
+        if (s_receiveLineLen + 1U < sizeof(s_receiveLine)) {
+            s_receiveLine[s_receiveLineLen++] = (char)byteValue;
+        } else {
+            clearCommandLineState();
+        }
     }
-    *outByte = -1;
+
     return false;
 }
 
-void discardAvailableInput(void)
+PlannedSongCommandResult receiveCommand(void)
 {
-    while (Serial.available() > 0) {
-        (void)Serial.read();
-    }
-}
+    char line[PLANNED_SONG_LINE_MAX];
+    char songName[PLANNED_SONG_LINE_MAX];
+    char* trimmedLine;
+    const char* songStart;
+    size_t songLength;
+    const PlannedSongCatalogEntry* entry;
 
-bool parsePwmCommand(uint32_t* deadlineTick, uint32_t timeoutMs)
-{
-    int percent = 0;
-    int haveDigits = 0;
-    int ch = -1;
-
-    while (readByteWithTimeout(&ch, deadlineTick, timeoutMs)) {
-        if (ch == '\r') {
-            continue;
-        }
-        if (ch == '\n') {
-            break;
-        }
-        if (ch >= '0' && ch <= '9') {
-            percent = (percent * 10) + (ch - '0');
-            haveDigits = 1;
-            if (percent > 100) {
-                percent = 100;
-            }
-        }
+    if (!readLineFromSerial(line, sizeof(line))) {
+        return PLANNED_SONG_CMD_NONE;
     }
 
-    if (!haveDigits) {
-        return false;
+    trimmedLine = trimAsciiWhitespace(line);
+    if (*trimmedLine == '\0') {
+        return PLANNED_SONG_CMD_NONE;
     }
 
-    platform_io_set_finger_pressed_duty((float)percent / 100.0f);
-    return true;
-}
-
-PlannedSongReceiveResult receiveUploadedSong(uint32_t timeoutMs)
-{
-    uint32_t deadlineTick;
-    int b0;
-    int b1;
-    int b2;
-    int b3;
-    int countHi;
-    int countLo;
-    uint16_t stepCount;
-    uint16_t index;
-
-    if (Serial.available() <= 0) {
-        return PLANNED_SONG_RX_NONE;
+    if (!(asciiToLower(trimmedLine[0]) == 'p' &&
+            asciiToLower(trimmedLine[1]) == 'l' &&
+            asciiToLower(trimmedLine[2]) == 'a' &&
+            asciiToLower(trimmedLine[3]) == 'y' &&
+            (trimmedLine[4] == '\0' || asciiIsSpace(trimmedLine[4])))) {
+        DEBUG_PRINT(F("[PLANDBG] cmd_ignore line="));
+        DEBUG_PRINT(trimmedLine);
+        DEBUG_PRINTLN(F(""));
+        return PLANNED_SONG_CMD_NONE;
     }
 
-    deadlineTick = (uint32_t)millis() + timeoutMs;
-    if (!readByteWithTimeout(&b0, &deadlineTick, timeoutMs)
-            || !readByteWithTimeout(&b1, &deadlineTick, timeoutMs)
-            || !readByteWithTimeout(&b2, &deadlineTick, timeoutMs)
-            || !readByteWithTimeout(&b3, &deadlineTick, timeoutMs)) {
-        return PLANNED_SONG_RX_INVALID;
+    songStart = trimmedLine + 4;
+    while (*songStart != '\0' && asciiIsSpace(*songStart)) {
+        songStart++;
     }
 
-    if (b0 == 'P' && b1 == 'W' && b2 == 'M' && b3 == ' ') {
-        DEBUG_PRINT(F("[PLANDBG] rx_pwm tick="));
-        DEBUG_PRINT((uint32_t)millis());
-        DEBUG_PRINTLN(F("ms"));
-        return parsePwmCommand(&deadlineTick, timeoutMs)
-            ? PLANNED_SONG_RX_COMMAND_ONLY
-            : PLANNED_SONG_RX_INVALID;
+    if (*songStart == '\0') {
+        DEBUG_PRINTLN(F("[PLANDBG] cmd_missing_song"));
+        return PLANNED_SONG_CMD_INVALID;
     }
 
-    if (b0 != PLANNED_SONG_WIRE_MAGIC_0
-            || b1 != PLANNED_SONG_WIRE_MAGIC_1
-            || b2 != PLANNED_SONG_WIRE_MAGIC_2
-            || b3 != PLANNED_SONG_WIRE_MAGIC_3) {
-        DEBUG_PRINT(F("[PLANDBG] rx_invalid_header tick="));
-        DEBUG_PRINT((uint32_t)millis());
-        DEBUG_PRINTLN(F("ms"));
-        discardAvailableInput();
-        return PLANNED_SONG_RX_INVALID;
+    songLength = strlen(songStart);
+    if (songLength >= sizeof(songName)) {
+        DEBUG_PRINT(F("[PLANDBG] cmd_song_name_too_long name="));
+        DEBUG_PRINT(songStart);
+        DEBUG_PRINTLN(F(""));
+        return PLANNED_SONG_CMD_INVALID;
     }
 
-    s_uploadReceiveStartTick = (uint32_t)millis();
+    memcpy(songName, songStart, songLength + 1U);
+    trimAsciiWhitespace(songName);
+    stripOptionalMidExtension(songName);
 
-    if (!readByteWithTimeout(&countHi, &deadlineTick, timeoutMs)
-            || !readByteWithTimeout(&countLo, &deadlineTick, timeoutMs)) {
-        return PLANNED_SONG_RX_INVALID;
+    entry = findSongEntry(songName);
+    if (entry == NULL) {
+        DEBUG_PRINT(F("[PLANDBG] cmd_unknown_song name="));
+        DEBUG_PRINT(songName);
+        DEBUG_PRINTLN(F(""));
+        return PLANNED_SONG_CMD_INVALID;
     }
 
-    stepCount = (uint16_t)(((uint16_t)countHi << 8) | (uint16_t)countLo);
-    DEBUG_PRINT(F("[PLANDBG] rx_begin tick="));
-    DEBUG_PRINT(s_uploadReceiveStartTick);
-    DEBUG_PRINT(F("ms steps="));
-    DEBUG_PRINT(stepCount);
-    DEBUG_PRINTLN(F(""));
-    if (stepCount == 0U || stepCount > PLANNED_SONG_MAX_STEPS) {
-        discardAvailableInput();
-        return PLANNED_SONG_RX_INVALID;
-    }
+    s_activeSong = entry->steps;
+    s_activeSongLen = entry->length;
+    s_activeSongName = entry->command_name;
 
-    for (index = 0U; index < stepCount; ++index) {
-        int posHi;
-        int posLo;
-        int mask;
-        int pressHi;
-        int pressLo;
-        int travelHi;
-        int travelLo;
-        uint16_t positionX100;
-
-        if (!readByteWithTimeout(&posHi, &deadlineTick, timeoutMs)
-                || !readByteWithTimeout(&posLo, &deadlineTick, timeoutMs)
-                || !readByteWithTimeout(&mask, &deadlineTick, timeoutMs)
-                || !readByteWithTimeout(&pressHi, &deadlineTick, timeoutMs)
-                || !readByteWithTimeout(&pressLo, &deadlineTick, timeoutMs)
-                || !readByteWithTimeout(&travelHi, &deadlineTick, timeoutMs)
-                || !readByteWithTimeout(&travelLo, &deadlineTick, timeoutMs)) {
-            return PLANNED_SONG_RX_INVALID;
-        }
-
-        positionX100 = (uint16_t)(((uint16_t)posHi << 8) | (uint16_t)posLo);
-        s_uploadedSong[index].position_mm = (float)positionX100 / 100.0f;
-        s_uploadedSong[index].fingers_mask = (uint8_t)mask;
-        s_uploadedSong[index].press_duration_ms =
-            (uint16_t)(((uint16_t)pressHi << 8) | (uint16_t)pressLo);
-        s_uploadedSong[index].travel_duration_ms =
-            (uint16_t)(((uint16_t)travelHi << 8) | (uint16_t)travelLo);
-    }
-
-    s_uploadedSongLen = stepCount;
-    s_uploadReceiveDoneTick = (uint32_t)millis();
-    DEBUG_PRINT(F("[PLANDBG] rx_done tick="));
-    DEBUG_PRINT(s_uploadReceiveDoneTick);
-    DEBUG_PRINT(F("ms rx_ms="));
-    DEBUG_PRINT(s_uploadReceiveDoneTick - s_uploadReceiveStartTick);
+    DEBUG_PRINT(F("[PLANDBG] cmd_play name="));
+    DEBUG_PRINT(s_activeSongName);
     DEBUG_PRINT(F(" steps="));
-    DEBUG_PRINT(stepCount);
-    DEBUG_PRINT(F(" bytes="));
-    DEBUG_PRINT((uint32_t)stepCount * 7U + 6U);
-    DEBUG_PRINT(F(" first_pos="));
-    DEBUG_PRINT(s_uploadedSong[0].position_mm, 2);
-    DEBUG_PRINTLN(F("mm"));
-    return PLANNED_SONG_RX_SONG_READY;
+    DEBUG_PRINT(s_activeSongLen);
+    DEBUG_PRINTLN(F(""));
+
+    return PLANNED_SONG_CMD_PLAY_SELECTED;
 }
 
 bool playbackButtonPressed(void)
@@ -288,6 +347,7 @@ bool playbackButtonPressed(void)
 void pressFingerMask(uint8_t fingersMask)
 {
     uint8_t fingerIndex;
+
     for (fingerIndex = 0U; fingerIndex < (uint8_t)app_config::finger_count; ++fingerIndex) {
         if ((fingersMask & (uint8_t)(1U << fingerIndex)) != 0U) {
             hal_fingerPress(fingerIndex);
@@ -295,21 +355,26 @@ void pressFingerMask(uint8_t fingersMask)
     }
 }
 
-void beginUploadedSong(void)
+void beginSelectedSong(void)
 {
+    if (s_activeSong == NULL || s_activeSongLen == 0U) {
+        return;
+    }
+
     s_stepIndex = 0U;
     s_deadlineTick = 0U;
     s_pauseStartTick = 0U;
     s_resumeNeedsRepress = false;
     s_songBeginTick = hal_getTick();
+    hal_pidSetEnabled(true);
     s_runState = PLANNED_SONG_PREPOSITION;
 
     DEBUG_PRINT(F("[PLANDBG] song_begin tick="));
     DEBUG_PRINT(s_songBeginTick);
-    DEBUG_PRINT(F("ms from_rx_done="));
-    DEBUG_PRINT(s_songBeginTick - s_uploadReceiveDoneTick);
-    DEBUG_PRINT(F("ms steps="));
-    DEBUG_PRINT(s_uploadedSongLen);
+    DEBUG_PRINT(F("ms name="));
+    DEBUG_PRINT(s_activeSongName);
+    DEBUG_PRINT(F(" steps="));
+    DEBUG_PRINT(s_activeSongLen);
     DEBUG_PRINTLN(F(""));
 }
 
@@ -329,27 +394,17 @@ void resumeFromPause(uint32_t now)
     hal_pidSetEnabled(true);
 
     if (s_resumeState == PLANNED_SONG_PREPOSITION) {
-        hal_motorSetTarget(s_uploadedSong[0].position_mm);
+        hal_motorSetTarget(s_activeSong[0].position_mm);
     } else if (s_resumeState == PLANNED_SONG_TRAVEL &&
-               (s_stepIndex + 1U) < s_uploadedSongLen) {
-        hal_motorSetTarget(s_uploadedSong[s_stepIndex + 1U].position_mm);
+               (s_stepIndex + 1U) < s_activeSongLen) {
+        hal_motorSetTarget(s_activeSong[s_stepIndex + 1U].position_mm);
     } else if (s_resumeState == PLANNED_SONG_PRESS) {
-        hal_motorSetTarget(s_uploadedSong[s_stepIndex].position_mm);
-        pressFingerMask(s_uploadedSong[s_stepIndex].fingers_mask);
+        hal_motorSetTarget(s_activeSong[s_stepIndex].position_mm);
+        pressFingerMask(s_activeSong[s_stepIndex].fingers_mask);
         s_resumeNeedsRepress = false;
     }
 
     s_runState = s_resumeState;
-}
-
-void resetUploadedSongState(void)
-{
-    s_uploadedSongLen = 0U;
-    s_stepIndex = 0U;
-    s_deadlineTick = 0U;
-    s_pauseStartTick = 0U;
-    s_stateEntryTick = hal_getTick();
-    s_resumeNeedsRepress = false;
 }
 }
 
@@ -360,23 +415,17 @@ void PlannedSongPlayer_run(void)
     if (s_runState != PLANNED_SONG_PAUSED &&
             s_runState != PLANNED_SONG_FAULTED &&
             s_runState != PLANNED_SONG_HOMING &&
-            s_runState != PLANNED_SONG_WAITING_FOR_UPLOAD &&
+            s_runState != PLANNED_SONG_WAITING_FOR_SELECTION &&
             plannedFaultActive()) {
         plannedAbortForFault();
         s_runState = PLANNED_SONG_FAULTED;
     }
 
-    if (s_runState == PLANNED_SONG_WAITING_FOR_UPLOAD || s_runState == PLANNED_SONG_DONE) {
-        const PlannedSongReceiveResult receiveResult =
-            receiveUploadedSong(PLANNED_SONG_UART_TIMEOUT_MS);
+    if (s_runState == PLANNED_SONG_WAITING_FOR_SELECTION) {
+        const PlannedSongCommandResult commandResult = receiveCommand();
 
-        if (receiveResult == PLANNED_SONG_RX_SONG_READY) {
-            beginUploadedSong();
-        } else if (receiveResult == PLANNED_SONG_RX_INVALID) {
-            plannedAbortForFault();
-            resetUploadedSongState();
-            s_runState = PLANNED_SONG_WAITING_FOR_UPLOAD;
-            return;
+        if (commandResult == PLANNED_SONG_CMD_PLAY_SELECTED) {
+            beginSelectedSong();
         } else {
             return;
         }
@@ -387,6 +436,7 @@ void PlannedSongPlayer_run(void)
     if (s_runState != PLANNED_SONG_PAUSED &&
             s_runState != PLANNED_SONG_FAULTED &&
             s_runState != PLANNED_SONG_HOMING &&
+            s_runState != PLANNED_SONG_WAITING_FOR_SELECTION &&
             playbackButtonPressed()) {
         if (s_runState == PLANNED_SONG_PRESS) {
             s_resumeNeedsRepress = true;
@@ -399,7 +449,7 @@ void PlannedSongPlayer_run(void)
         switch (s_runState) {
             case PLANNED_SONG_PREPOSITION:
                 s_prepositionStartTick = now;
-                hal_motorSetTarget(s_uploadedSong[0].position_mm);
+                hal_motorSetTarget(s_activeSong[0].position_mm);
                 break;
 
             case PLANNED_SONG_PRESS:
@@ -408,29 +458,23 @@ void PlannedSongPlayer_run(void)
                     DEBUG_PRINT(now);
                     DEBUG_PRINT(F("ms after_song_begin="));
                     DEBUG_PRINT(now - s_songBeginTick);
-                    DEBUG_PRINT(F("ms after_rx_done="));
-                    DEBUG_PRINT(now - s_uploadReceiveDoneTick);
                     DEBUG_PRINT(F("ms preposition_ms="));
                     DEBUG_PRINT(now - s_prepositionStartTick);
                     DEBUG_PRINT(F(" pos="));
                     DEBUG_PRINT(hal_motorGetPosition(), 2);
                     DEBUG_PRINT(F("mm tgt="));
-                    DEBUG_PRINT(s_uploadedSong[0].position_mm, 2);
+                    DEBUG_PRINT(s_activeSong[0].position_mm, 2);
                     DEBUG_PRINTLN(F("mm"));
                 }
-                if (s_resumeNeedsRepress) {
-                    pressFingerMask(s_uploadedSong[s_stepIndex].fingers_mask);
-                    s_resumeNeedsRepress = false;
-                } else {
-                    pressFingerMask(s_uploadedSong[s_stepIndex].fingers_mask);
-                    s_deadlineTick = now + s_uploadedSong[s_stepIndex].press_duration_ms;
-                }
+                pressFingerMask(s_activeSong[s_stepIndex].fingers_mask);
+                s_resumeNeedsRepress = false;
+                s_deadlineTick = now + s_activeSong[s_stepIndex].press_duration_ms;
                 break;
 
             case PLANNED_SONG_TRAVEL:
-                if ((s_stepIndex + 1U) < s_uploadedSongLen) {
-                    hal_motorSetTarget(s_uploadedSong[s_stepIndex + 1U].position_mm);
-                    s_deadlineTick = now + s_uploadedSong[s_stepIndex].travel_duration_ms;
+                if ((s_stepIndex + 1U) < s_activeSongLen) {
+                    hal_motorSetTarget(s_activeSong[s_stepIndex + 1U].position_mm);
+                    s_deadlineTick = now + s_activeSong[s_stepIndex].travel_duration_ms;
                 }
                 break;
 
@@ -451,17 +495,19 @@ void PlannedSongPlayer_run(void)
                     hal_clearEStop();
                 }
                 song_player_homing();
-                resetUploadedSongState();
+                clearSelectedSongState();
+                clearCommandLineState();
                 s_buttonPrevState = platform_io_is_user_button_active();
-                s_runState = PLANNED_SONG_WAITING_FOR_UPLOAD;
+                s_runState = PLANNED_SONG_WAITING_FOR_SELECTION;
                 break;
 
             case PLANNED_SONG_DONE:
                 hal_fingerReleaseAll();
-                s_runState = PLANNED_SONG_WAITING_FOR_UPLOAD;
+                clearSelectedSongState();
+                s_runState = PLANNED_SONG_WAITING_FOR_SELECTION;
                 break;
 
-            case PLANNED_SONG_WAITING_FOR_UPLOAD:
+            case PLANNED_SONG_WAITING_FOR_SELECTION:
             default:
                 break;
         }
@@ -480,7 +526,7 @@ void PlannedSongPlayer_run(void)
         case PLANNED_SONG_PRESS:
             if ((int32_t)(now - s_deadlineTick) >= 0) {
                 hal_fingerReleaseAll();
-                if ((s_stepIndex + 1U) < s_uploadedSongLen) {
+                if ((s_stepIndex + 1U) < s_activeSongLen) {
                     s_runState = PLANNED_SONG_TRAVEL;
                 } else {
                     s_runState = PLANNED_SONG_DONE;
@@ -509,7 +555,7 @@ void PlannedSongPlayer_run(void)
 
         case PLANNED_SONG_HOMING:
         case PLANNED_SONG_DONE:
-        case PLANNED_SONG_WAITING_FOR_UPLOAD:
+        case PLANNED_SONG_WAITING_FOR_SELECTION:
         default:
             break;
     }
