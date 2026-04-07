@@ -355,6 +355,37 @@ void pressFingerMask(uint8_t fingersMask)
     }
 }
 
+uint16_t plannedPressDurationMs(const PlannedSongStep& step)
+{
+    const uint32_t totalStepMs =
+        (uint32_t)step.press_duration_ms + (uint32_t)step.travel_duration_ms;
+    uint32_t scaledPressMs = (uint32_t)(
+        ((float)step.press_duration_ms * app_config::planned_song_press_duration_scale) + 0.5f);
+    uint32_t maxPressMs = totalStepMs;
+
+    if (step.travel_duration_ms > app_config::planned_song_min_travel_ms) {
+        maxPressMs = totalStepMs - app_config::planned_song_min_travel_ms;
+    } else if (step.travel_duration_ms > 0U) {
+        maxPressMs = totalStepMs - 1U;
+    }
+
+    if (scaledPressMs < step.press_duration_ms) {
+        scaledPressMs = step.press_duration_ms;
+    }
+    if (scaledPressMs > maxPressMs) {
+        scaledPressMs = maxPressMs;
+    }
+
+    return (uint16_t)scaledPressMs;
+}
+
+uint16_t plannedTravelDurationMs(const PlannedSongStep& step)
+{
+    const uint32_t totalStepMs =
+        (uint32_t)step.press_duration_ms + (uint32_t)step.travel_duration_ms;
+    return (uint16_t)(totalStepMs - plannedPressDurationMs(step));
+}
+
 void beginSelectedSong(void)
 {
     if (s_activeSong == NULL || s_activeSongLen == 0U) {
@@ -468,13 +499,13 @@ void PlannedSongPlayer_run(void)
                 }
                 pressFingerMask(s_activeSong[s_stepIndex].fingers_mask);
                 s_resumeNeedsRepress = false;
-                s_deadlineTick = now + s_activeSong[s_stepIndex].press_duration_ms;
+                s_deadlineTick = now + plannedPressDurationMs(s_activeSong[s_stepIndex]);
                 break;
 
             case PLANNED_SONG_TRAVEL:
                 if ((s_stepIndex + 1U) < s_activeSongLen) {
                     hal_motorSetTarget(s_activeSong[s_stepIndex + 1U].position_mm);
-                    s_deadlineTick = now + s_activeSong[s_stepIndex].travel_duration_ms;
+                    s_deadlineTick = now + plannedTravelDurationMs(s_activeSong[s_stepIndex]);
                 }
                 break;
 

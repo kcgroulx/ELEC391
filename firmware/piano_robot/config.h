@@ -33,6 +33,8 @@ constexpr uint8_t finger_pwm_channels[finger_count] = {2U, 3U, 4U, 5U, 6U};
 constexpr uint32_t finger_pwm_frequency_hz = 1000U;
 constexpr uint8_t finger_pwm_resolution_bits = 10U;
 constexpr float finger_pwm_pressed_default_duty = 1.0f;
+constexpr float planned_song_press_duration_scale = 1.20f;
+constexpr uint16_t planned_song_min_travel_ms = 60U;
 
 constexpr float encoder_cpr_motor = 64.0f;
 constexpr float gear_ratio = 30.0f;
