@@ -171,7 +171,7 @@ def parse_midi_file(path):
 
 # ─── Robot geometry (matches firmware config) ────────────────────────────────
 
-WHITE_KEY_WIDTH_MM = 23.5
+WHITE_KEY_WIDTH_MM = 23.3125
 MOTOR_MIN_MM = 0.0
 MOTOR_MAX_MM = 380.0
 MIDI_MIN = 36  # C2
@@ -273,8 +273,12 @@ class PianoRobotGUI:
         self.tel_target = 0.0
         self.tel_state = "IDLE"
         self.tel_fingers = 0x00
+        self.play_state = "IDLE"
+        self.play_group = "0/0"
+        self.play_late_ms = 0
 
         self._build_ui()
+        self._refresh_runtime_labels()
         self._start_serial_poll()
         self._refresh_ports()
 
@@ -579,6 +583,15 @@ class PianoRobotGUI:
             return 0
         return int(max(t + d for t, _, d, _ in self.current_notes))
 
+    def _refresh_runtime_labels(self):
+        self.pos_label.configure(
+            text=f"Motor: {self.tel_pos:.1f}mm  |  Target: {self.tel_target:.1f}mm  "
+                 f"|  State: {self.tel_state}  |  Play: {self.play_state} {self.play_group}  "
+                 f"|  Late: {self.play_late_ms}ms  |  Fingers: 0x{self.tel_fingers:02X}")
+        self.tel_label.configure(
+            text=f"pos={self.tel_pos:.1f}  tgt={self.tel_target:.1f}  "
+                 f"[{self.tel_state}]  play={self.play_state}")
+
     def _cancel_playback_finish(self):
         if self.playback_finish_after is not None:
             self.root.after_cancel(self.playback_finish_after)
@@ -673,6 +686,9 @@ class PianoRobotGUI:
         self.connected = False
         self.firmware_ready = False
         self.is_playing = False
+        self.play_state = "IDLE"
+        self.play_group = "0/0"
+        self.play_late_ms = 0
         if self.serial_port:
             try:
                 self.serial_port.close()
@@ -684,6 +700,7 @@ class PianoRobotGUI:
         self.status_label.configure(text="Disconnected", fg=COLORS['warning'])
         self.stop_btn.configure(state='disabled')
         self.progress_label.configure(text="Ready")
+        self._refresh_runtime_labels()
         self._log("Disconnected\n", 'info')
 
     def _serial_reader(self):
@@ -755,6 +772,24 @@ class PianoRobotGUI:
             self._log(line + '\n', 'success' if status == "OK" else 'info')
             return
 
+        play_match = re.search(
+            r'^\[PLAY\]\s+state=(\w+)\s+group=(\d+/\d+)\s+late=(-?\d+)ms$',
+            line)
+        if play_match:
+            self.play_state = play_match.group(1)
+            self.play_group = play_match.group(2)
+            self.play_late_ms = int(play_match.group(3))
+            self._refresh_runtime_labels()
+            if self.play_state == "DONE":
+                self._playback_finished("Song complete")
+            elif self.play_state == "FAULT":
+                self._playback_finished("Playback fault")
+            elif self.is_playing:
+                self.progress_label.configure(
+                    text=f"Playing: {self.play_state} {self.play_group}  late={self.play_late_ms}ms")
+            self._log(line + '\n', 'telemetry')
+            return
+
         # Parse telemetry: [TEL] STATE  pos=X.XXmm  tgt=X.XXmm ...
         tel_match = re.search(
             r'\[TEL\]\s+(\w+)\s+pos=\s*([\d.-]+)mm\s+tgt=\s*([\d.-]+)mm.*fingers=0x([0-9A-Fa-f]+)',
@@ -767,12 +802,7 @@ class PianoRobotGUI:
             self.robot_pos_mm = self.tel_pos
             self.robot_target_mm = self.tel_target
 
-            self.pos_label.configure(
-                text=f"Motor: {self.tel_pos:.1f}mm  |  Target: {self.tel_target:.1f}mm  "
-                     f"|  State: {self.tel_state}  |  Fingers: 0x{self.tel_fingers:02X}")
-            self.tel_label.configure(
-                text=f"pos={self.tel_pos:.1f}  tgt={self.tel_target:.1f}  [{self.tel_state}]")
-
+            self._refresh_runtime_labels()
             self._update_active_keys()
             self._draw_piano()
             self._log(line + '\n', 'telemetry')

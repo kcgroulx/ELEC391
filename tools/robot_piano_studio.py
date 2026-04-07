@@ -85,7 +85,7 @@ COLORS = {
     "keyboard_preview": "#f08a24",
 }
 
-WHITE_KEY_WIDTH_MM = 23.5
+WHITE_KEY_WIDTH_MM = 23.3125
 MOTOR_MIN_MM = 0.0
 MOTOR_MAX_MM = 380.0
 

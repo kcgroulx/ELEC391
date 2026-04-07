@@ -730,17 +730,8 @@ void NotePlayer_playSequence(const NoteEvent* events, uint16_t count)
 
             hal_motorSetTarget(chordMM);
             hal_motorWaitUntilArrived();
-
-            /* Re-sync if late */
-            {
-                uint32_t pressTick = pressTickForNoteStart(scheduledStartTick);
-                uint32_t now = hal_getTick();
-                if ((int32_t)(now - pressTick) > 0) {
-                    scheduledStartTick = now;
-                }
-            }
-
             logPressLateness(pressTickForNoteStart(scheduledStartTick));
+
             waitUntilTick(pressTickForNoteStart(scheduledStartTick));
 
             /* Press all assigned fingers simultaneously */

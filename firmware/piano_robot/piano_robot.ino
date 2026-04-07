@@ -183,6 +183,6 @@ void loop(void)
     //test_allFingers();            /* 7. Move to keys + press all 5 fingers  */
     //test_happyBirthday();         /* 8. Happy Birthday in C major           */
     //test_chords();                /* 9. Chord playback test                 */
-    //test_clocks();                /* 10. Clocks by Coldplay                 */
+    // test_clocks();                /* 10. Clocks by Coldplay                 */
 
 }
